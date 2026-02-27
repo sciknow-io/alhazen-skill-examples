@@ -58,6 +58,8 @@ Environment:
     TYPEDB_HOST       TypeDB server host (default: localhost)
     TYPEDB_PORT       TypeDB server port (default: 1729)
     TYPEDB_DATABASE   Database name (default: alhazen_notebook)
+    TYPEDB_USERNAME   TypeDB username (default: admin)
+    TYPEDB_PASSWORD   TypeDB password (default: password)
     ALHAZEN_CACHE_DIR File cache directory (default: ~/.alhazen/cache)
     GITHUB_TOKEN      GitHub API token (optional, for higher rate limits)
 """
@@ -83,13 +85,13 @@ except ImportError:
     )
 
 try:
-    from typedb.driver import SessionType, TransactionType, TypeDB
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
     TYPEDB_AVAILABLE = True
 except ImportError:
     TYPEDB_AVAILABLE = False
     print(
-        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=2.25.0,<3.0.0'",
+        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.8.0'",
         file=sys.stderr,
     )
 
@@ -124,6 +126,8 @@ except ImportError:
 TYPEDB_HOST = os.getenv("TYPEDB_HOST", "localhost")
 TYPEDB_PORT = int(os.getenv("TYPEDB_PORT", "1729"))
 TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "alhazen_notebook")
+TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
+TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
 
@@ -134,7 +138,11 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
 def get_driver():
     """Get TypeDB driver connection."""
-    return TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
+    return TypeDB.driver(
+        f"{TYPEDB_HOST}:{TYPEDB_PORT}",
+        Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD),
+        DriverOptions(is_tls_enabled=False),
+    )
 
 
 def generate_id(prefix: str) -> str:
@@ -150,11 +158,11 @@ def escape_string(s: str) -> str:
 
 
 def get_attr(entity: dict, attr_name: str, default=None):
-    """Safely extract attribute value from TypeDB fetch result."""
-    attr_list = entity.get(attr_name, [])
-    if attr_list and len(attr_list) > 0:
-        return attr_list[0].get("value", default)
-    return default
+    """Safely extract attribute value from TypeDB 3.x fetch result.
+
+    TypeDB 3.x fetch returns plain Python dicts directly.
+    """
+    return entity.get(attr_name, default)
 
 
 def get_timestamp() -> str:
@@ -241,7 +249,7 @@ def fetch_raw_content(url: str) -> str:
         return ""
 
 
-def store_artifact(session, artifact_id, artifact_type, name, content, source_uri,
+def store_artifact(driver, artifact_id, artifact_type, name, content, source_uri,
                    mime_type="text/plain", extra_attrs=None):
     """Store an artifact with inline or cached content.
 
@@ -249,7 +257,7 @@ def store_artifact(session, artifact_id, artifact_type, name, content, source_ur
     """
     timestamp = get_timestamp()
 
-    with session.transaction(TransactionType.WRITE) as tx:
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
         if CACHE_AVAILABLE and should_cache(content):
             cache_result = save_to_cache(
                 artifact_id=artifact_id,
@@ -284,58 +292,58 @@ def store_artifact(session, artifact_id, artifact_type, name, content, source_ur
                     query += f", has {k} {v}"
 
         query += ";"
-        tx.query.insert(query)
+        tx.query(query).resolve()
         tx.commit()
 
     return {"storage": storage, "content_length": len(content)}
 
 
-def link_artifact_to_entity(session, artifact_id, artifact_type, entity_id, entity_type):
+def link_artifact_to_entity(driver, artifact_id, artifact_type, entity_id, entity_type):
     """Link an artifact to an entity via representation relation."""
-    with session.transaction(TransactionType.WRITE) as tx:
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
         query = f'''match
             $a isa {artifact_type}, has id "{artifact_id}";
             $e isa {entity_type}, has id "{entity_id}";
         insert (artifact: $a, referent: $e) isa representation;'''
-        tx.query.insert(query)
+        tx.query(query).resolve()
         tx.commit()
 
 
-def add_to_collection(session, entity_id, collection_id):
+def add_to_collection(driver, entity_id, collection_id):
     """Add an entity to a collection via collection-membership."""
     timestamp = get_timestamp()
-    with session.transaction(TransactionType.WRITE) as tx:
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
         query = f'''match
             $c isa techrecon-investigation, has id "{collection_id}";
             $e isa entity, has id "{entity_id}";
         insert (collection: $c, member: $e) isa collection-membership,
             has created-at {timestamp};'''
-        tx.query.insert(query)
+        tx.query(query).resolve()
         tx.commit()
 
 
-def apply_tags(session, entity_id, entity_type, tags):
+def apply_tags(driver, entity_id, entity_type, tags):
     """Apply tags to an entity."""
     if not tags:
         return
     for tag_name in tags:
         tag_id = generate_id("tag")
-        with session.transaction(TransactionType.READ) as tx:
-            tag_check = f'match $t isa tag, has name "{tag_name}"; fetch $t: id;'
-            existing_tag = list(tx.query.fetch(tag_check))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            tag_check = f'match $t isa tag, has name "{tag_name}"; fetch {{ "id": $t.id }};'
+            existing_tag = list(tx.query(tag_check).resolve())
 
         if not existing_tag:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(
                     f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
-                )
+                ).resolve()
                 tx.commit()
 
-        with session.transaction(TransactionType.WRITE) as tx:
-            tx.query.insert(f'''match
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
                 $e isa {entity_type}, has id "{entity_id}";
                 $t isa tag, has name "{tag_name}";
-            insert (tagged-entity: $e, tag: $t) isa tagging;''')
+            insert (tagged-entity: $e, tag: $t) isa tagging;''').resolve()
             tx.commit()
 
 
@@ -362,14 +370,13 @@ def cmd_start_investigation(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # If a system is specified, add it to the investigation
-            if args.system:
-                add_to_collection(session, args.system, inv_id)
+        # If a system is specified, add it to the investigation
+        if args.system:
+            add_to_collection(driver, args.system, inv_id)
 
     print(json.dumps({
         "success": True,
@@ -383,49 +390,55 @@ def cmd_start_investigation(args):
 def cmd_list_investigations(args):
     """List investigations with summary counts."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = "match $i isa techrecon-investigation"
-                if args.status:
-                    query += f', has techrecon-investigation-status "{args.status}"'
-                query += """;
-                fetch $i: id, name, description, techrecon-investigation-status, techrecon-investigation-goal, created-at;"""
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = "match $i isa techrecon-investigation"
+            if args.status:
+                query += f', has techrecon-investigation-status "{args.status}"'
+            query += """;
+            fetch {
+                "id": $i.id,
+                "name": $i.name,
+                "description": $i.description,
+                "techrecon-investigation-status": $i.techrecon-investigation-status,
+                "techrecon-investigation-goal": $i.techrecon-investigation-goal,
+                "created-at": $i.created-at
+            };"""
+            results = list(tx.query(query).resolve())
 
-                investigations = []
-                for r in results:
-                    inv_id = get_attr(r["i"], "id")
+            investigations = []
+            for r in results:
+                inv_id = r.get("id")
 
-                    # Count members by type
-                    counts = {"systems": 0, "artifacts": 0, "notes": 0, "components": 0, "concepts": 0, "data_models": 0}
-                    member_types = [
-                        ("systems", "techrecon-system"),
-                        ("artifacts", "artifact"),
-                        ("notes", "note"),
-                        ("components", "techrecon-component"),
-                        ("concepts", "techrecon-concept"),
-                        ("data_models", "techrecon-data-model"),
-                    ]
-                    for count_key, type_name in member_types:
-                        count_q = f'''match
-                            $c isa techrecon-investigation, has id "{inv_id}";
-                            (collection: $c, member: $m) isa collection-membership;
-                            $m isa {type_name};
-                        fetch $m: id;'''
-                        try:
-                            counts[count_key] = len(list(tx.query.fetch(count_q)))
-                        except Exception:
-                            pass
+                # Count members by type
+                counts = {"systems": 0, "artifacts": 0, "notes": 0, "components": 0, "concepts": 0, "data_models": 0}
+                member_types = [
+                    ("systems", "techrecon-system"),
+                    ("artifacts", "artifact"),
+                    ("notes", "note"),
+                    ("components", "techrecon-component"),
+                    ("concepts", "techrecon-concept"),
+                    ("data_models", "techrecon-data-model"),
+                ]
+                for count_key, type_name in member_types:
+                    count_q = f'''match
+                        $c isa techrecon-investigation, has id "{inv_id}";
+                        (collection: $c, member: $m) isa collection-membership;
+                        $m isa {type_name};
+                    fetch {{ "id": $m.id }};'''
+                    try:
+                        counts[count_key] = len(list(tx.query(count_q).resolve()))
+                    except Exception:
+                        pass
 
-                    investigations.append({
-                        "id": inv_id,
-                        "name": get_attr(r["i"], "name"),
-                        "description": get_attr(r["i"], "description"),
-                        "status": get_attr(r["i"], "techrecon-investigation-status"),
-                        "goal": get_attr(r["i"], "techrecon-investigation-goal"),
-                        "created_at": get_attr(r["i"], "created-at"),
-                        "summary": counts,
-                    })
+                investigations.append({
+                    "id": inv_id,
+                    "name": r.get("name"),
+                    "description": r.get("description"),
+                    "status": r.get("techrecon-investigation-status"),
+                    "goal": r.get("techrecon-investigation-goal"),
+                    "created_at": r.get("created-at"),
+                    "summary": counts,
+                })
 
     print(json.dumps({"success": True, "investigations": investigations, "count": len(investigations)}, indent=2))
 
@@ -433,20 +446,19 @@ def cmd_list_investigations(args):
 def cmd_update_investigation(args):
     """Update investigation status."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Delete old status and insert new
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.delete(f'''match
-                    $i isa techrecon-investigation, has id "{args.id}",
-                        has techrecon-investigation-status $s;
-                delete $i has $s;''')
-                tx.commit()
+        # Delete old status and insert new
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $i isa techrecon-investigation, has id "{args.id}",
+                    has techrecon-investigation-status $s;
+            delete $i has $s;''').resolve()
+            tx.commit()
 
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(f'''match
-                    $i isa techrecon-investigation, has id "{args.id}";
-                insert $i has techrecon-investigation-status "{args.status}";''')
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $i isa techrecon-investigation, has id "{args.id}";
+            insert $i has techrecon-investigation-status "{args.status}";''').resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "investigation_id": args.id, "status": args.status}))
 
@@ -454,126 +466,173 @@ def cmd_update_investigation(args):
 def cmd_show_investigation(args):
     """Show full investigation details with all members."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Investigation metadata
-                inv_query = f'''match $i isa techrecon-investigation, has id "{args.id}";
-                fetch $i: id, name, description, techrecon-investigation-status,
-                    techrecon-investigation-goal, created-at;'''
-                inv_result = list(tx.query.fetch(inv_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Investigation metadata
+            inv_query = f'''match $i isa techrecon-investigation, has id "{args.id}";
+            fetch {{
+                "id": $i.id,
+                "name": $i.name,
+                "description": $i.description,
+                "techrecon-investigation-status": $i.techrecon-investigation-status,
+                "techrecon-investigation-goal": $i.techrecon-investigation-goal,
+                "created-at": $i.created-at
+            }};'''
+            inv_result = list(tx.query(inv_query).resolve())
 
-                if not inv_result:
-                    print(json.dumps({"success": False, "error": "Investigation not found"}))
-                    return
+            if not inv_result:
+                print(json.dumps({"success": False, "error": "Investigation not found"}))
+                return
 
-                # Systems
-                sys_query = f'''match
-                    $c isa techrecon-investigation, has id "{args.id}";
-                    (collection: $c, member: $s) isa collection-membership;
-                    $s isa techrecon-system;
-                fetch $s: id, name, techrecon-repo-url, techrecon-language,
-                    techrecon-stars, techrecon-maturity, description, created-at;'''
-                sys_result = list(tx.query.fetch(sys_query))
+            # Systems
+            sys_query = f'''match
+                $c isa techrecon-investigation, has id "{args.id}";
+                (collection: $c, member: $s) isa collection-membership;
+                $s isa techrecon-system;
+            fetch {{
+                "id": $s.id,
+                "name": $s.name,
+                "techrecon-repo-url": $s.techrecon-repo-url,
+                "techrecon-language": $s.techrecon-language,
+                "techrecon-stars": $s.techrecon-stars,
+                "techrecon-maturity": $s.techrecon-maturity,
+                "description": $s.description,
+                "created-at": $s.created-at
+            }};'''
+            sys_result = list(tx.query(sys_query).resolve())
 
-                # Artifacts
-                art_query = f'''match
-                    $c isa techrecon-investigation, has id "{args.id}";
-                    (collection: $c, member: $a) isa collection-membership;
-                    $a isa artifact;
-                fetch $a: id, name, source-uri, mime-type, created-at;'''
-                art_result = list(tx.query.fetch(art_query))
+            # Artifacts
+            art_query = f'''match
+                $c isa techrecon-investigation, has id "{args.id}";
+                (collection: $c, member: $a) isa collection-membership;
+                $a isa artifact;
+            fetch {{
+                "id": $a.id,
+                "name": $a.name,
+                "source-uri": $a.source-uri,
+                "mime-type": $a.mime-type,
+                "created-at": $a.created-at
+            }};'''
+            art_result = list(tx.query(art_query).resolve())
 
-                # Notes by subtype
-                note_types = [
-                    ("architecture", "techrecon-architecture-note"),
-                    ("design-pattern", "techrecon-design-pattern-note"),
-                    ("integration", "techrecon-integration-note"),
-                    ("comparison", "techrecon-comparison-note"),
-                    ("data-model", "techrecon-data-model-note"),
-                    ("assessment", "techrecon-assessment-note"),
-                ]
-                all_notes = []
-                for note_type_label, note_type_name in note_types:
-                    note_query = f'''match
-                        $c isa techrecon-investigation, has id "{args.id}";
-                        (collection: $c, member: $n) isa collection-membership;
-                        $n isa {note_type_name};
-                    fetch $n: id, name, content, created-at;'''
-                    try:
-                        note_results = list(tx.query.fetch(note_query))
-                    except Exception:
-                        note_results = []
-
-                    for nr in note_results:
-                        note_data = {
-                            "id": get_attr(nr["n"], "id"),
-                            "name": get_attr(nr["n"], "name"),
-                            "content": get_attr(nr["n"], "content"),
-                            "type": note_type_label,
-                            "created_at": get_attr(nr["n"], "created-at"),
-                        }
-                        # Fetch priority/complexity for integration and assessment notes
-                        if note_type_label in ("integration", "assessment"):
-                            nid = note_data["id"]
-                            extra_q = f'''match $n isa {note_type_name}, has id "{nid}";
-                            fetch $n: techrecon-integration-priority, techrecon-complexity-rating;'''
-                            try:
-                                extra_r = list(tx.query.fetch(extra_q))
-                                if extra_r:
-                                    note_data["priority"] = get_attr(extra_r[0]["n"], "techrecon-integration-priority")
-                                    note_data["complexity"] = get_attr(extra_r[0]["n"], "techrecon-complexity-rating")
-                            except Exception:
-                                pass
-                        all_notes.append(note_data)
-
-                # Also fetch general notes
-                gen_note_query = f'''match
+            # Notes by subtype
+            note_types = [
+                ("architecture", "techrecon-architecture-note"),
+                ("design-pattern", "techrecon-design-pattern-note"),
+                ("integration", "techrecon-integration-note"),
+                ("comparison", "techrecon-comparison-note"),
+                ("data-model", "techrecon-data-model-note"),
+                ("assessment", "techrecon-assessment-note"),
+            ]
+            all_notes = []
+            for note_type_label, note_type_name in note_types:
+                note_query = f'''match
                     $c isa techrecon-investigation, has id "{args.id}";
                     (collection: $c, member: $n) isa collection-membership;
-                    $n isa note;
-                fetch $n: id, name, content, created-at;'''
+                    $n isa {note_type_name};
+                fetch {{
+                    "id": $n.id,
+                    "name": $n.name,
+                    "content": $n.content,
+                    "created-at": $n.created-at
+                }};'''
                 try:
-                    gen_note_results = list(tx.query.fetch(gen_note_query))
-                    # Exclude notes already found as subtypes
-                    seen_ids = {n["id"] for n in all_notes}
-                    for nr in gen_note_results:
-                        nid = get_attr(nr["n"], "id")
-                        if nid not in seen_ids:
-                            all_notes.append({
-                                "id": nid,
-                                "name": get_attr(nr["n"], "name"),
-                                "content": get_attr(nr["n"], "content"),
-                                "type": "general",
-                                "created_at": get_attr(nr["n"], "created-at"),
-                            })
+                    note_results = list(tx.query(note_query).resolve())
                 except Exception:
-                    pass
+                    note_results = []
 
-                # Components
-                comp_query = f'''match
-                    $c isa techrecon-investigation, has id "{args.id}";
-                    (collection: $c, member: $m) isa collection-membership;
-                    $m isa techrecon-component;
-                fetch $m: id, name, techrecon-component-type, techrecon-component-role;'''
-                comp_result = list(tx.query.fetch(comp_query))
+                for nr in note_results:
+                    note_data = {
+                        "id": nr.get("id"),
+                        "name": nr.get("name"),
+                        "content": nr.get("content"),
+                        "type": note_type_label,
+                        "created_at": nr.get("created-at"),
+                    }
+                    # Fetch priority/complexity for integration and assessment notes
+                    if note_type_label in ("integration", "assessment"):
+                        nid = note_data["id"]
+                        extra_q = f'''match $n isa {note_type_name}, has id "{nid}";
+                        fetch {{
+                            "techrecon-integration-priority": $n.techrecon-integration-priority,
+                            "techrecon-complexity-rating": $n.techrecon-complexity-rating
+                        }};'''
+                        try:
+                            extra_r = list(tx.query(extra_q).resolve())
+                            if extra_r:
+                                note_data["priority"] = extra_r[0].get("techrecon-integration-priority")
+                                note_data["complexity"] = extra_r[0].get("techrecon-complexity-rating")
+                        except Exception:
+                            pass
+                    all_notes.append(note_data)
 
-                # Concepts
-                con_query = f'''match
-                    $c isa techrecon-investigation, has id "{args.id}";
-                    (collection: $c, member: $m) isa collection-membership;
-                    $m isa techrecon-concept;
-                fetch $m: id, name, techrecon-concept-category, description;'''
-                con_result = list(tx.query.fetch(con_query))
+            # Also fetch general notes
+            gen_note_query = f'''match
+                $c isa techrecon-investigation, has id "{args.id}";
+                (collection: $c, member: $n) isa collection-membership;
+                $n isa note;
+            fetch {{
+                "id": $n.id,
+                "name": $n.name,
+                "content": $n.content,
+                "created-at": $n.created-at
+            }};'''
+            try:
+                gen_note_results = list(tx.query(gen_note_query).resolve())
+                # Exclude notes already found as subtypes
+                seen_ids = {n["id"] for n in all_notes}
+                for nr in gen_note_results:
+                    nid = nr.get("id")
+                    if nid not in seen_ids:
+                        all_notes.append({
+                            "id": nid,
+                            "name": nr.get("name"),
+                            "content": nr.get("content"),
+                            "type": "general",
+                            "created_at": nr.get("created-at"),
+                        })
+            except Exception:
+                pass
 
-                # Data models
-                dm_query = f'''match
-                    $c isa techrecon-investigation, has id "{args.id}";
-                    (collection: $c, member: $m) isa collection-membership;
-                    $m isa techrecon-data-model;
-                fetch $m: id, name, techrecon-model-format, description;'''
-                dm_result = list(tx.query.fetch(dm_query))
+            # Components
+            comp_query = f'''match
+                $c isa techrecon-investigation, has id "{args.id}";
+                (collection: $c, member: $m) isa collection-membership;
+                $m isa techrecon-component;
+            fetch {{
+                "id": $m.id,
+                "name": $m.name,
+                "techrecon-component-type": $m.techrecon-component-type,
+                "techrecon-component-role": $m.techrecon-component-role
+            }};'''
+            comp_result = list(tx.query(comp_query).resolve())
 
-    inv = inv_result[0]["i"]
+            # Concepts
+            con_query = f'''match
+                $c isa techrecon-investigation, has id "{args.id}";
+                (collection: $c, member: $m) isa collection-membership;
+                $m isa techrecon-concept;
+            fetch {{
+                "id": $m.id,
+                "name": $m.name,
+                "techrecon-concept-category": $m.techrecon-concept-category,
+                "description": $m.description
+            }};'''
+            con_result = list(tx.query(con_query).resolve())
+
+            # Data models
+            dm_query = f'''match
+                $c isa techrecon-investigation, has id "{args.id}";
+                (collection: $c, member: $m) isa collection-membership;
+                $m isa techrecon-data-model;
+            fetch {{
+                "id": $m.id,
+                "name": $m.name,
+                "techrecon-model-format": $m.techrecon-model-format,
+                "description": $m.description
+            }};'''
+            dm_result = list(tx.query(dm_query).resolve())
+
+    inv = inv_result[0]
     output = {
         "success": True,
         "investigation": {
@@ -585,40 +644,40 @@ def cmd_show_investigation(args):
             "created_at": get_attr(inv, "created-at"),
         },
         "systems": [{
-            "id": get_attr(s["s"], "id"),
-            "name": get_attr(s["s"], "name"),
-            "repo_url": get_attr(s["s"], "techrecon-repo-url"),
-            "language": get_attr(s["s"], "techrecon-language"),
-            "stars": get_attr(s["s"], "techrecon-stars"),
-            "maturity": get_attr(s["s"], "techrecon-maturity"),
-            "description": get_attr(s["s"], "description"),
-            "created_at": get_attr(s["s"], "created-at"),
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "repo_url": s.get("techrecon-repo-url"),
+            "language": s.get("techrecon-language"),
+            "stars": s.get("techrecon-stars"),
+            "maturity": s.get("techrecon-maturity"),
+            "description": s.get("description"),
+            "created_at": s.get("created-at"),
         } for s in sys_result],
         "artifacts": [{
-            "id": get_attr(a["a"], "id"),
-            "name": get_attr(a["a"], "name"),
-            "source_uri": get_attr(a["a"], "source-uri"),
-            "mime_type": get_attr(a["a"], "mime-type"),
-            "created_at": get_attr(a["a"], "created-at"),
+            "id": a.get("id"),
+            "name": a.get("name"),
+            "source_uri": a.get("source-uri"),
+            "mime_type": a.get("mime-type"),
+            "created_at": a.get("created-at"),
         } for a in art_result],
         "notes": all_notes,
         "components": [{
-            "id": get_attr(c["m"], "id"),
-            "name": get_attr(c["m"], "name"),
-            "type": get_attr(c["m"], "techrecon-component-type"),
-            "role": get_attr(c["m"], "techrecon-component-role"),
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "type": c.get("techrecon-component-type"),
+            "role": c.get("techrecon-component-role"),
         } for c in comp_result],
         "concepts": [{
-            "id": get_attr(c["m"], "id"),
-            "name": get_attr(c["m"], "name"),
-            "category": get_attr(c["m"], "techrecon-concept-category"),
-            "description": get_attr(c["m"], "description"),
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "category": c.get("techrecon-concept-category"),
+            "description": c.get("description"),
         } for c in con_result],
         "data_models": [{
-            "id": get_attr(d["m"], "id"),
-            "name": get_attr(d["m"], "name"),
-            "format": get_attr(d["m"], "techrecon-model-format"),
-            "description": get_attr(d["m"], "description"),
+            "id": d.get("id"),
+            "name": d.get("name"),
+            "format": d.get("techrecon-model-format"),
+            "description": d.get("description"),
         } for d in dm_result],
         "summary": {
             "systems_count": len(sys_result),
@@ -668,16 +727,15 @@ def cmd_add_system(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Add to investigation if specified
-            if args.investigation:
-                add_to_collection(session, system_id, args.investigation)
+        # Add to investigation if specified
+        if args.investigation:
+            add_to_collection(driver, system_id, args.investigation)
 
-            apply_tags(session, system_id, "techrecon-system", args.tags)
+        apply_tags(driver, system_id, "techrecon-system", args.tags)
 
     print(json.dumps({"success": True, "system_id": system_id, "name": args.name}, indent=2))
 
@@ -704,25 +762,24 @@ def cmd_add_component(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
+
+        # Link to system if specified
+        if args.system:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'''match
+                    $s isa techrecon-system, has id "{args.system}";
+                    $c isa techrecon-component, has id "{comp_id}";
+                insert (system: $s, component: $c) isa techrecon-has-component;''').resolve()
                 tx.commit()
 
-            # Link to system if specified
-            if args.system:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.insert(f'''match
-                        $s isa techrecon-system, has id "{args.system}";
-                        $c isa techrecon-component, has id "{comp_id}";
-                    insert (system: $s, component: $c) isa techrecon-has-component;''')
-                    tx.commit()
+        # Add to investigation if specified
+        if args.investigation:
+            add_to_collection(driver, comp_id, args.investigation)
 
-            # Add to investigation if specified
-            if args.investigation:
-                add_to_collection(session, comp_id, args.investigation)
-
-            apply_tags(session, comp_id, "techrecon-component", args.tags)
+        apply_tags(driver, comp_id, "techrecon-component", args.tags)
 
     print(json.dumps({"success": True, "component_id": comp_id, "name": args.name}, indent=2))
 
@@ -745,15 +802,14 @@ def cmd_add_concept(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            if args.investigation:
-                add_to_collection(session, concept_id, args.investigation)
+        if args.investigation:
+            add_to_collection(driver, concept_id, args.investigation)
 
-            apply_tags(session, concept_id, "techrecon-concept", args.tags)
+        apply_tags(driver, concept_id, "techrecon-concept", args.tags)
 
     print(json.dumps({"success": True, "concept_id": concept_id, "name": args.name}, indent=2))
 
@@ -778,24 +834,23 @@ def cmd_add_data_model(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
+
+        # Link to system if specified
+        if args.system:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'''match
+                    $s isa techrecon-system, has id "{args.system}";
+                    $m isa techrecon-data-model, has id "{model_id}";
+                insert (system: $s, data-model: $m) isa techrecon-has-data-model;''').resolve()
                 tx.commit()
 
-            # Link to system if specified
-            if args.system:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.insert(f'''match
-                        $s isa techrecon-system, has id "{args.system}";
-                        $m isa techrecon-data-model, has id "{model_id}";
-                    insert (system: $s, data-model: $m) isa techrecon-has-data-model;''')
-                    tx.commit()
+        if args.investigation:
+            add_to_collection(driver, model_id, args.investigation)
 
-            if args.investigation:
-                add_to_collection(session, model_id, args.investigation)
-
-            apply_tags(session, model_id, "techrecon-data-model", args.tags)
+        apply_tags(driver, model_id, "techrecon-data-model", args.tags)
 
     print(json.dumps({"success": True, "data_model_id": model_id, "name": args.name}, indent=2))
 
@@ -868,69 +923,68 @@ def cmd_ingest_repo(args):
         last_commit = last_commit.replace(" ", "T")
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Create system if not specified
-            if not system_id:
-                system_id = generate_id("system")
-                sys_query = f'''insert $s isa techrecon-system,
-                    has id "{system_id}",
-                    has name "{escape_string(meta.get('full_name', f'{owner}/{repo}'))}",
-                    has description "{escape_string((meta.get('description') or '')[:500])}",
-                    has techrecon-repo-url "{escape_string(args.url)}",
-                    has techrecon-language "{escape_string(meta.get('language') or 'unknown')}",
-                    has techrecon-stars {meta.get('stargazers_count', 0)},
-                    has techrecon-license-type "{escape_string((meta.get('license') or {}).get('spdx_id', 'unknown'))}",
-                    has techrecon-maturity "stable",
-                    has created-at {timestamp}'''
+        # Create system if not specified
+        if not system_id:
+            system_id = generate_id("system")
+            sys_query = f'''insert $s isa techrecon-system,
+                has id "{system_id}",
+                has name "{escape_string(meta.get('full_name', f'{owner}/{repo}'))}",
+                has description "{escape_string((meta.get('description') or '')[:500])}",
+                has techrecon-repo-url "{escape_string(args.url)}",
+                has techrecon-language "{escape_string(meta.get('language') or 'unknown')}",
+                has techrecon-stars {meta.get('stargazers_count', 0)},
+                has techrecon-license-type "{escape_string((meta.get('license') or {}).get('spdx_id', 'unknown'))}",
+                has techrecon-maturity "stable",
+                has created-at {timestamp}'''
 
-                if last_commit:
-                    sys_query += f', has techrecon-last-commit {last_commit}'
+            if last_commit:
+                sys_query += f', has techrecon-last-commit {last_commit}'
 
-                sys_query += ";"
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.insert(sys_query)
-                    tx.commit()
+            sys_query += ";"
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(sys_query).resolve()
+                tx.commit()
 
-            # Store README artifact
-            readme_artifact_id = None
-            if readme_content:
-                readme_artifact_id = generate_id("artifact")
-                store_artifact(
-                    session,
-                    readme_artifact_id,
-                    "techrecon-readme",
-                    f"README: {owner}/{repo}",
-                    readme_content,
-                    f"{args.url}/blob/main/README.md",
-                    mime_type="text/markdown",
-                )
-                link_artifact_to_entity(session, readme_artifact_id, "techrecon-readme", system_id, "techrecon-system")
+        # Store README artifact
+        readme_artifact_id = None
+        if readme_content:
+            readme_artifact_id = generate_id("artifact")
+            store_artifact(
+                driver,
+                readme_artifact_id,
+                "techrecon-readme",
+                f"README: {owner}/{repo}",
+                readme_content,
+                f"{args.url}/blob/main/README.md",
+                mime_type="text/markdown",
+            )
+            link_artifact_to_entity(driver, readme_artifact_id, "techrecon-readme", system_id, "techrecon-system")
 
-            # Store file tree artifact
-            tree_artifact_id = None
-            if file_tree:
-                tree_artifact_id = generate_id("artifact")
-                tree_json = json.dumps(file_tree, indent=2)
-                store_artifact(
-                    session,
-                    tree_artifact_id,
-                    "techrecon-file-tree",
-                    f"File Tree: {owner}/{repo}",
-                    tree_json,
-                    f"{args.url}/tree/main",
-                    mime_type="application/json",
-                )
-                link_artifact_to_entity(session, tree_artifact_id, "techrecon-file-tree", system_id, "techrecon-system")
+        # Store file tree artifact
+        tree_artifact_id = None
+        if file_tree:
+            tree_artifact_id = generate_id("artifact")
+            tree_json = json.dumps(file_tree, indent=2)
+            store_artifact(
+                driver,
+                tree_artifact_id,
+                "techrecon-file-tree",
+                f"File Tree: {owner}/{repo}",
+                tree_json,
+                f"{args.url}/tree/main",
+                mime_type="application/json",
+            )
+            link_artifact_to_entity(driver, tree_artifact_id, "techrecon-file-tree", system_id, "techrecon-system")
 
-            # Add to investigation
-            if args.investigation:
-                add_to_collection(session, system_id, args.investigation)
-                if readme_artifact_id:
-                    add_to_collection(session, readme_artifact_id, args.investigation)
-                if tree_artifact_id:
-                    add_to_collection(session, tree_artifact_id, args.investigation)
+        # Add to investigation
+        if args.investigation:
+            add_to_collection(driver, system_id, args.investigation)
+            if readme_artifact_id:
+                add_to_collection(driver, readme_artifact_id, args.investigation)
+            if tree_artifact_id:
+                add_to_collection(driver, tree_artifact_id, args.investigation)
 
-            apply_tags(session, system_id, "techrecon-system", args.tags)
+        apply_tags(driver, system_id, "techrecon-system", args.tags)
 
     output = {
         "success": True,
@@ -962,21 +1016,20 @@ def cmd_ingest_doc(args):
     artifact_id = generate_id("artifact")
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            name = title if title else f"Doc page: {args.url[:60]}"
-            store_artifact(
-                session, artifact_id, "techrecon-doc-page",
-                name, content, args.url, mime_type="text/html",
-            )
+        name = title if title else f"Doc page: {args.url[:60]}"
+        store_artifact(
+            driver, artifact_id, "techrecon-doc-page",
+            name, content, args.url, mime_type="text/html",
+        )
 
-            # Link to system
-            if args.system:
-                link_artifact_to_entity(session, artifact_id, "techrecon-doc-page", args.system, "techrecon-system")
+        # Link to system
+        if args.system:
+            link_artifact_to_entity(driver, artifact_id, "techrecon-doc-page", args.system, "techrecon-system")
 
-            if args.investigation:
-                add_to_collection(session, artifact_id, args.investigation)
+        if args.investigation:
+            add_to_collection(driver, artifact_id, args.investigation)
 
-            apply_tags(session, artifact_id, "techrecon-doc-page", args.tags)
+        apply_tags(driver, artifact_id, "techrecon-doc-page", args.tags)
 
     print(json.dumps({
         "success": True,
@@ -1016,20 +1069,19 @@ def cmd_ingest_source(args):
         extra_attrs["techrecon-file-language"] = language
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            store_artifact(
-                session, artifact_id, "techrecon-source-file",
-                f"Source: {file_path}", content, args.url,
-                mime_type="text/plain", extra_attrs=extra_attrs,
-            )
+        store_artifact(
+            driver, artifact_id, "techrecon-source-file",
+            f"Source: {file_path}", content, args.url,
+            mime_type="text/plain", extra_attrs=extra_attrs,
+        )
 
-            if args.system:
-                link_artifact_to_entity(session, artifact_id, "techrecon-source-file", args.system, "techrecon-system")
+        if args.system:
+            link_artifact_to_entity(driver, artifact_id, "techrecon-source-file", args.system, "techrecon-system")
 
-            if args.investigation:
-                add_to_collection(session, artifact_id, args.investigation)
+        if args.investigation:
+            add_to_collection(driver, artifact_id, args.investigation)
 
-            apply_tags(session, artifact_id, "techrecon-source-file", args.tags)
+        apply_tags(driver, artifact_id, "techrecon-source-file", args.tags)
 
     print(json.dumps({
         "success": True,
@@ -1076,20 +1128,19 @@ def cmd_ingest_schema(args):
     name = os.path.basename(args.file) if args.file else f"Schema from {source_uri[:60]}"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            store_artifact(
-                session, artifact_id, "techrecon-schema-file",
-                f"Schema: {name}", content, source_uri,
-                mime_type="text/plain", extra_attrs=extra_attrs,
-            )
+        store_artifact(
+            driver, artifact_id, "techrecon-schema-file",
+            f"Schema: {name}", content, source_uri,
+            mime_type="text/plain", extra_attrs=extra_attrs,
+        )
 
-            if args.system:
-                link_artifact_to_entity(session, artifact_id, "techrecon-schema-file", args.system, "techrecon-system")
+        if args.system:
+            link_artifact_to_entity(driver, artifact_id, "techrecon-schema-file", args.system, "techrecon-system")
 
-            if args.investigation:
-                add_to_collection(session, artifact_id, args.investigation)
+        if args.investigation:
+            add_to_collection(driver, artifact_id, args.investigation)
 
-            apply_tags(session, artifact_id, "techrecon-schema-file", args.tags)
+        apply_tags(driver, artifact_id, "techrecon-schema-file", args.tags)
 
     print(json.dumps({
         "success": True,
@@ -1143,21 +1194,20 @@ def cmd_ingest_model_card(args):
     extra_attrs = {"techrecon-model-id": model_id}
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            store_artifact(
-                session, artifact_id, "techrecon-model-card",
-                f"Model Card: {model_id}", card_content,
-                f"https://huggingface.co/{model_id}",
-                mime_type="text/markdown", extra_attrs=extra_attrs,
-            )
+        store_artifact(
+            driver, artifact_id, "techrecon-model-card",
+            f"Model Card: {model_id}", card_content,
+            f"https://huggingface.co/{model_id}",
+            mime_type="text/markdown", extra_attrs=extra_attrs,
+        )
 
-            if args.system:
-                link_artifact_to_entity(session, artifact_id, "techrecon-model-card", args.system, "techrecon-system")
+        if args.system:
+            link_artifact_to_entity(driver, artifact_id, "techrecon-model-card", args.system, "techrecon-system")
 
-            if args.investigation:
-                add_to_collection(session, artifact_id, args.investigation)
+        if args.investigation:
+            add_to_collection(driver, artifact_id, args.investigation)
 
-            apply_tags(session, artifact_id, "techrecon-model-card", args.tags)
+        apply_tags(driver, artifact_id, "techrecon-model-card", args.tags)
 
     print(json.dumps({
         "success": True,
@@ -1180,13 +1230,12 @@ def cmd_ingest_model_card(args):
 def cmd_link_component(args):
     """Link a component to a system."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(f'''match
-                    $s isa techrecon-system, has id "{args.system}";
-                    $c isa techrecon-component, has id "{args.component}";
-                insert (system: $s, component: $c) isa techrecon-has-component;''')
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $s isa techrecon-system, has id "{args.system}";
+                $c isa techrecon-component, has id "{args.component}";
+            insert (system: $s, component: $c) isa techrecon-has-component;''').resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "system": args.system, "component": args.component}))
 
@@ -1194,17 +1243,16 @@ def cmd_link_component(args):
 def cmd_link_concept(args):
     """Link a concept to a component."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $comp isa techrecon-component, has id "{args.component}";
-                    $con isa techrecon-concept, has id "{args.concept}";
-                insert (component: $comp, concept: $con) isa techrecon-uses-concept'''
-                if args.confidence:
-                    query += f", has confidence {args.confidence}"
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            query = f'''match
+                $comp isa techrecon-component, has id "{args.component}";
+                $con isa techrecon-concept, has id "{args.concept}";
+            insert (component: $comp, concept: $con) isa techrecon-uses-concept'''
+            if args.confidence:
+                query += f", has confidence {args.confidence}"
+            query += ";"
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "component": args.component, "concept": args.concept}))
 
@@ -1212,13 +1260,12 @@ def cmd_link_concept(args):
 def cmd_link_data_model(args):
     """Link a data model to a system."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(f'''match
-                    $s isa techrecon-system, has id "{args.system}";
-                    $m isa techrecon-data-model, has id "{args.data_model}";
-                insert (system: $s, data-model: $m) isa techrecon-has-data-model;''')
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $s isa techrecon-system, has id "{args.system}";
+                $m isa techrecon-data-model, has id "{args.data_model}";
+            insert (system: $s, data-model: $m) isa techrecon-has-data-model;''').resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "system": args.system, "data_model": args.data_model}))
 
@@ -1226,17 +1273,16 @@ def cmd_link_data_model(args):
 def cmd_link_dependency(args):
     """Link a system dependency."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $s isa techrecon-system, has id "{args.system}";
-                    $d isa techrecon-system, has id "{args.dependency}";
-                insert (dependent: $s, dependency: $d) isa techrecon-system-dependency'''
-                if args.version:
-                    query += f', has techrecon-version "{escape_string(args.version)}"'
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            query = f'''match
+                $s isa techrecon-system, has id "{args.system}";
+                $d isa techrecon-system, has id "{args.dependency}";
+            insert (dependent: $s, dependency: $d) isa techrecon-system-dependency'''
+            if args.version:
+                query += f', has techrecon-version "{escape_string(args.version)}"'
+            query += ";"
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({
         "success": True,
@@ -1254,23 +1300,29 @@ def cmd_link_dependency(args):
 def cmd_list_systems(args):
     """List all systems."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match $s isa techrecon-system;
-                fetch $s: id, name, techrecon-repo-url, techrecon-language,
-                    techrecon-stars, techrecon-maturity, created-at;"""
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match $s isa techrecon-system;
+            fetch {
+                "id": $s.id,
+                "name": $s.name,
+                "techrecon-repo-url": $s.techrecon-repo-url,
+                "techrecon-language": $s.techrecon-language,
+                "techrecon-stars": $s.techrecon-stars,
+                "techrecon-maturity": $s.techrecon-maturity,
+                "created-at": $s.created-at
+            };"""
+            results = list(tx.query(query).resolve())
 
     systems = []
     for r in results:
         systems.append({
-            "id": get_attr(r["s"], "id"),
-            "name": get_attr(r["s"], "name"),
-            "repo_url": get_attr(r["s"], "techrecon-repo-url"),
-            "language": get_attr(r["s"], "techrecon-language"),
-            "stars": get_attr(r["s"], "techrecon-stars"),
-            "maturity": get_attr(r["s"], "techrecon-maturity"),
-            "created_at": get_attr(r["s"], "created-at"),
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "repo_url": r.get("techrecon-repo-url"),
+            "language": r.get("techrecon-language"),
+            "stars": r.get("techrecon-stars"),
+            "maturity": r.get("techrecon-maturity"),
+            "created_at": r.get("created-at"),
         })
 
     print(json.dumps({"success": True, "systems": systems, "count": len(systems)}, indent=2))
@@ -1279,62 +1331,96 @@ def cmd_list_systems(args):
 def cmd_show_system(args):
     """Show full system details."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # System details
-                sys_query = f'''match $s isa techrecon-system, has id "{args.id}";
-                fetch $s: id, name, description, techrecon-repo-url, techrecon-doc-url,
-                    techrecon-language, techrecon-version, techrecon-stars, techrecon-last-commit,
-                    techrecon-license-type, techrecon-maturity, techrecon-package-name, created-at;'''
-                sys_result = list(tx.query.fetch(sys_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # System details
+            sys_query = f'''match $s isa techrecon-system, has id "{args.id}";
+            fetch {{
+                "id": $s.id,
+                "name": $s.name,
+                "description": $s.description,
+                "techrecon-repo-url": $s.techrecon-repo-url,
+                "techrecon-doc-url": $s.techrecon-doc-url,
+                "techrecon-language": $s.techrecon-language,
+                "techrecon-version": $s.techrecon-version,
+                "techrecon-stars": $s.techrecon-stars,
+                "techrecon-last-commit": $s.techrecon-last-commit,
+                "techrecon-license-type": $s.techrecon-license-type,
+                "techrecon-maturity": $s.techrecon-maturity,
+                "techrecon-package-name": $s.techrecon-package-name,
+                "created-at": $s.created-at
+            }};'''
+            sys_result = list(tx.query(sys_query).resolve())
 
-                if not sys_result:
-                    print(json.dumps({"success": False, "error": "System not found"}))
-                    return
+            if not sys_result:
+                print(json.dumps({"success": False, "error": "System not found"}))
+                return
 
-                # Components
-                comp_query = f'''match
-                    $s isa techrecon-system, has id "{args.id}";
-                    (system: $s, component: $c) isa techrecon-has-component;
-                fetch $c: id, name, techrecon-component-type, techrecon-component-role;'''
-                comp_result = list(tx.query.fetch(comp_query))
+            # Components
+            comp_query = f'''match
+                $s isa techrecon-system, has id "{args.id}";
+                (system: $s, component: $c) isa techrecon-has-component;
+            fetch {{
+                "id": $c.id,
+                "name": $c.name,
+                "techrecon-component-type": $c.techrecon-component-type,
+                "techrecon-component-role": $c.techrecon-component-role
+            }};'''
+            comp_result = list(tx.query(comp_query).resolve())
 
-                # Data models
-                model_query = f'''match
-                    $s isa techrecon-system, has id "{args.id}";
-                    (system: $s, data-model: $m) isa techrecon-has-data-model;
-                fetch $m: id, name, techrecon-model-format;'''
-                model_result = list(tx.query.fetch(model_query))
+            # Data models
+            model_query = f'''match
+                $s isa techrecon-system, has id "{args.id}";
+                (system: $s, data-model: $m) isa techrecon-has-data-model;
+            fetch {{
+                "id": $m.id,
+                "name": $m.name,
+                "techrecon-model-format": $m.techrecon-model-format
+            }};'''
+            model_result = list(tx.query(model_query).resolve())
 
-                # Dependencies
-                dep_query = f'''match
-                    $s isa techrecon-system, has id "{args.id}";
-                    (dependent: $s, dependency: $d) isa techrecon-system-dependency;
-                fetch $d: id, name;'''
-                dep_result = list(tx.query.fetch(dep_query))
+            # Dependencies
+            dep_query = f'''match
+                $s isa techrecon-system, has id "{args.id}";
+                (dependent: $s, dependency: $d) isa techrecon-system-dependency;
+            fetch {{
+                "id": $d.id,
+                "name": $d.name
+            }};'''
+            dep_result = list(tx.query(dep_query).resolve())
 
-                # Artifacts
-                artifact_query = f'''match
-                    $s isa techrecon-system, has id "{args.id}";
-                    (artifact: $a, referent: $s) isa representation;
-                fetch $a: id, name, source-uri, mime-type;'''
-                artifact_result = list(tx.query.fetch(artifact_query))
+            # Artifacts
+            artifact_query = f'''match
+                $s isa techrecon-system, has id "{args.id}";
+                (artifact: $a, referent: $s) isa representation;
+            fetch {{
+                "id": $a.id,
+                "name": $a.name,
+                "source-uri": $a.source-uri,
+                "mime-type": $a.mime-type
+            }};'''
+            artifact_result = list(tx.query(artifact_query).resolve())
 
-                # Notes
-                notes_query = f'''match
-                    $s isa techrecon-system, has id "{args.id}";
-                    (note: $n, subject: $s) isa aboutness;
-                fetch $n: id, name, content;'''
-                notes_result = list(tx.query.fetch(notes_query))
+            # Notes
+            notes_query = f'''match
+                $s isa techrecon-system, has id "{args.id}";
+                (note: $n, subject: $s) isa aboutness;
+            fetch {{
+                "id": $n.id,
+                "name": $n.name,
+                "content": $n.content
+            }};'''
+            notes_result = list(tx.query(notes_query).resolve())
 
-                # Tags
-                tags_query = f'''match
-                    $s isa techrecon-system, has id "{args.id}";
-                    (tagged-entity: $s, tag: $t) isa tagging;
-                fetch $t: name;'''
-                tags_result = list(tx.query.fetch(tags_query))
+            # Tags
+            tags_query = f'''match
+                $s isa techrecon-system, has id "{args.id}";
+                (tagged-entity: $s, tag: $t) isa tagging;
+            fetch {{
+                "name": $t.name
+            }};'''
+            tags_result = list(tx.query(tags_query).resolve())
 
-    s = sys_result[0]["s"]
+    s = sys_result[0]
     output = {
         "success": True,
         "system": {
@@ -1352,32 +1438,32 @@ def cmd_show_system(args):
             "package": get_attr(s, "techrecon-package-name"),
         },
         "components": [{
-            "id": get_attr(c["c"], "id"),
-            "name": get_attr(c["c"], "name"),
-            "type": get_attr(c["c"], "techrecon-component-type"),
-            "role": get_attr(c["c"], "techrecon-component-role"),
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "type": c.get("techrecon-component-type"),
+            "role": c.get("techrecon-component-role"),
         } for c in comp_result],
         "data_models": [{
-            "id": get_attr(m["m"], "id"),
-            "name": get_attr(m["m"], "name"),
-            "format": get_attr(m["m"], "techrecon-model-format"),
+            "id": m.get("id"),
+            "name": m.get("name"),
+            "format": m.get("techrecon-model-format"),
         } for m in model_result],
         "dependencies": [{
-            "id": get_attr(d["d"], "id"),
-            "name": get_attr(d["d"], "name"),
+            "id": d.get("id"),
+            "name": d.get("name"),
         } for d in dep_result],
         "artifacts": [{
-            "id": get_attr(a["a"], "id"),
-            "name": get_attr(a["a"], "name"),
-            "source_uri": get_attr(a["a"], "source-uri"),
-            "mime_type": get_attr(a["a"], "mime-type"),
+            "id": a.get("id"),
+            "name": a.get("name"),
+            "source_uri": a.get("source-uri"),
+            "mime_type": a.get("mime-type"),
         } for a in artifact_result],
         "notes": [{
-            "id": get_attr(n["n"], "id"),
-            "name": get_attr(n["n"], "name"),
-            "content": get_attr(n["n"], "content"),
+            "id": n.get("id"),
+            "name": n.get("name"),
+            "content": n.get("content"),
         } for n in notes_result],
-        "tags": [get_attr(t["t"], "name") for t in tags_result],
+        "tags": [t.get("name") for t in tags_result],
     }
 
     print(json.dumps(output, indent=2, default=str))
@@ -1386,67 +1472,82 @@ def cmd_show_system(args):
 def cmd_show_architecture(args):
     """Show system architecture: components and their relationships."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get system
-                sys_query = f'''match $s isa techrecon-system, has id "{args.id}";
-                fetch $s: id, name;'''
-                sys_result = list(tx.query.fetch(sys_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get system
+            sys_query = f'''match $s isa techrecon-system, has id "{args.id}";
+            fetch {{
+                "id": $s.id,
+                "name": $s.name
+            }};'''
+            sys_result = list(tx.query(sys_query).resolve())
 
-                if not sys_result:
-                    print(json.dumps({"success": False, "error": "System not found"}))
-                    return
+            if not sys_result:
+                print(json.dumps({"success": False, "error": "System not found"}))
+                return
 
-                # Get all components
-                comp_query = f'''match
-                    $s isa techrecon-system, has id "{args.id}";
-                    (system: $s, component: $c) isa techrecon-has-component;
-                fetch $c: id, name, techrecon-component-type, techrecon-component-role, techrecon-file-path;'''
-                comp_result = list(tx.query.fetch(comp_query))
+            # Get all components
+            comp_query = f'''match
+                $s isa techrecon-system, has id "{args.id}";
+                (system: $s, component: $c) isa techrecon-has-component;
+            fetch {{
+                "id": $c.id,
+                "name": $c.name,
+                "techrecon-component-type": $c.techrecon-component-type,
+                "techrecon-component-role": $c.techrecon-component-role,
+                "techrecon-file-path": $c.techrecon-file-path
+            }};'''
+            comp_result = list(tx.query(comp_query).resolve())
 
-                # Get component-concept links
-                concept_links = []
-                for c in comp_result:
-                    cid = get_attr(c["c"], "id")
-                    cq = f'''match
-                        $c isa techrecon-component, has id "{cid}";
-                        (component: $c, concept: $con) isa techrecon-uses-concept;
-                    fetch $con: id, name, techrecon-concept-category;'''
-                    for r in tx.query.fetch(cq):
-                        concept_links.append({
-                            "component_id": cid,
-                            "concept_id": get_attr(r["con"], "id"),
-                            "concept_name": get_attr(r["con"], "name"),
-                            "concept_category": get_attr(r["con"], "techrecon-concept-category"),
-                        })
+            # Get component-concept links
+            concept_links = []
+            for c in comp_result:
+                cid = c.get("id")
+                cq = f'''match
+                    $c isa techrecon-component, has id "{cid}";
+                    (component: $c, concept: $con) isa techrecon-uses-concept;
+                fetch {{
+                    "id": $con.id,
+                    "name": $con.name,
+                    "techrecon-concept-category": $con.techrecon-concept-category
+                }};'''
+                for r in tx.query(cq).resolve():
+                    concept_links.append({
+                        "component_id": cid,
+                        "concept_id": r.get("id"),
+                        "concept_name": r.get("name"),
+                        "concept_category": r.get("techrecon-concept-category"),
+                    })
 
-                # Get component dependencies
-                comp_deps = []
-                for c in comp_result:
-                    cid = get_attr(c["c"], "id")
-                    dq = f'''match
-                        $c isa techrecon-component, has id "{cid}";
-                        (dependent-component: $c, dependency-component: $d) isa techrecon-component-dependency;
-                    fetch $d: id, name;'''
-                    for r in tx.query.fetch(dq):
-                        comp_deps.append({
-                            "from": cid,
-                            "to": get_attr(r["d"], "id"),
-                            "to_name": get_attr(r["d"], "name"),
-                        })
+            # Get component dependencies
+            comp_deps = []
+            for c in comp_result:
+                cid = c.get("id")
+                dq = f'''match
+                    $c isa techrecon-component, has id "{cid}";
+                    (dependent-component: $c, dependency-component: $d) isa techrecon-component-dependency;
+                fetch {{
+                "id": $d.id,
+                "name": $d.name
+            }};'''
+                for r in tx.query(dq).resolve():
+                    comp_deps.append({
+                        "from": cid,
+                        "to": r.get("id"),
+                        "to_name": r.get("name"),
+                    })
 
     output = {
         "success": True,
         "system": {
-            "id": get_attr(sys_result[0]["s"], "id"),
-            "name": get_attr(sys_result[0]["s"], "name"),
+            "id": sys_result[0].get("id"),
+            "name": sys_result[0].get("name"),
         },
         "components": [{
-            "id": get_attr(c["c"], "id"),
-            "name": get_attr(c["c"], "name"),
-            "type": get_attr(c["c"], "techrecon-component-type"),
-            "role": get_attr(c["c"], "techrecon-component-role"),
-            "file_path": get_attr(c["c"], "techrecon-file-path"),
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "type": c.get("techrecon-component-type"),
+            "role": c.get("techrecon-component-role"),
+            "file_path": c.get("techrecon-file-path"),
         } for c in comp_result],
         "concept_links": concept_links,
         "component_dependencies": comp_deps,
@@ -1458,65 +1559,73 @@ def cmd_show_architecture(args):
 def cmd_list_artifacts(args):
     """List artifacts with optional filters."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Build artifact type filter
-                artifact_types = [
-                    "techrecon-readme", "techrecon-source-file", "techrecon-doc-page",
-                    "techrecon-schema-file", "techrecon-model-card", "techrecon-file-tree",
-                ]
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Build artifact type filter
+            artifact_types = [
+                "techrecon-readme", "techrecon-source-file", "techrecon-doc-page",
+                "techrecon-schema-file", "techrecon-model-card", "techrecon-file-tree",
+            ]
 
-                if args.type:
-                    type_map = {
-                        "readme": "techrecon-readme",
-                        "source": "techrecon-source-file",
-                        "doc": "techrecon-doc-page",
-                        "schema": "techrecon-schema-file",
-                        "model-card": "techrecon-model-card",
-                        "file-tree": "techrecon-file-tree",
-                    }
-                    if args.type in type_map:
-                        artifact_types = [type_map[args.type]]
+            if args.type:
+                type_map = {
+                    "readme": "techrecon-readme",
+                    "source": "techrecon-source-file",
+                    "doc": "techrecon-doc-page",
+                    "schema": "techrecon-schema-file",
+                    "model-card": "techrecon-model-card",
+                    "file-tree": "techrecon-file-tree",
+                }
+                if args.type in type_map:
+                    artifact_types = [type_map[args.type]]
 
-                results = []
-                for atype in artifact_types:
-                    query = f"match $a isa {atype}"
+            results = []
+            for atype in artifact_types:
+                query = f"match $a isa {atype}"
 
-                    if args.system:
-                        query += f''';\n                        $s isa techrecon-system, has id "{args.system}";
-                        (artifact: $a, referent: $s) isa representation'''
+                if args.system:
+                    query += f''';\n                    $s isa techrecon-system, has id "{args.system}";
+                    (artifact: $a, referent: $s) isa representation'''
 
-                    query += ";\nfetch $a: id, name, source-uri, mime-type, created-at;"
+                query += """;
+            fetch {
+                "id": $a.id,
+                "name": $a.name,
+                "source-uri": $a.source-uri,
+                "mime-type": $a.mime-type,
+                "created-at": $a.created-at
+            };"""
 
-                    for r in tx.query.fetch(query):
-                        artifact_id = get_attr(r["a"], "id")
+                for r in tx.query(query).resolve():
+                    artifact_id = r.get("id")
 
-                        # Check analysis status
-                        status = "raw"
-                        if args.status and args.status != "all":
-                            notes_q = f'''match
-                                $a isa artifact, has id "{artifact_id}";
-                                (artifact: $a, referent: $e) isa representation;
-                                (note: $n, subject: $e) isa aboutness;
-                            fetch $n: id;'''
-                            try:
-                                notes = list(tx.query.fetch(notes_q))
-                                status = "analyzed" if len(notes) > 0 else "raw"
-                            except Exception:
-                                status = "raw"
+                    # Check analysis status
+                    status = "raw"
+                    if args.status and args.status != "all":
+                        notes_q = f'''match
+                            $a isa artifact, has id "{artifact_id}";
+                            (artifact: $a, referent: $e) isa representation;
+                            (note: $n, subject: $e) isa aboutness;
+                        fetch {{
+                            "id": $n.id
+                        }};'''
+                        try:
+                            notes = list(tx.query(notes_q).resolve())
+                            status = "analyzed" if len(notes) > 0 else "raw"
+                        except Exception:
+                            status = "raw"
 
-                            if args.status != status:
-                                continue
+                        if args.status != status:
+                            continue
 
-                        results.append({
-                            "id": artifact_id,
-                            "name": get_attr(r["a"], "name"),
-                            "type": atype,
-                            "source_uri": get_attr(r["a"], "source-uri"),
-                            "mime_type": get_attr(r["a"], "mime-type"),
-                            "created_at": get_attr(r["a"], "created-at"),
-                            "status": status,
-                        })
+                    results.append({
+                        "id": artifact_id,
+                        "name": r.get("name"),
+                        "type": atype,
+                        "source_uri": r.get("source-uri"),
+                        "mime_type": r.get("mime-type"),
+                        "created_at": r.get("created-at"),
+                        "status": status,
+                    })
 
     print(json.dumps({
         "success": True,
@@ -1528,27 +1637,38 @@ def cmd_list_artifacts(args):
 def cmd_show_artifact(args):
     """Show artifact content."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = f'''match $a isa artifact, has id "{args.id}";
-                fetch $a: id, name, content, cache-path, mime-type, file-size, source-uri, created-at;'''
-                result = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = f'''match $a isa artifact, has id "{args.id}";
+            fetch {{
+                "id": $a.id,
+                "name": $a.name,
+                "content": $a.content,
+                "cache-path": $a.cache-path,
+                "mime-type": $a.mime-type,
+                "file-size": $a.file-size,
+                "source-uri": $a.source-uri,
+                "created-at": $a.created-at
+            }};'''
+            result = list(tx.query(query).resolve())
 
-                if not result:
-                    print(json.dumps({"success": False, "error": "Artifact not found"}))
-                    return
+            if not result:
+                print(json.dumps({"success": False, "error": "Artifact not found"}))
+                return
 
-                # Get linked entity
-                entity_query = f'''match
-                    $a isa artifact, has id "{args.id}";
-                    (artifact: $a, referent: $e) isa representation;
-                fetch $e: id, name;'''
-                try:
-                    entity_result = list(tx.query.fetch(entity_query))
-                except Exception:
-                    entity_result = []
+            # Get linked entity
+            entity_query = f'''match
+                $a isa artifact, has id "{args.id}";
+                (artifact: $a, referent: $e) isa representation;
+            fetch {{
+                "id": $e.id,
+                "name": $e.name
+            }};'''
+            try:
+                entity_result = list(tx.query(entity_query).resolve())
+            except Exception:
+                entity_result = []
 
-    art = result[0]["a"]
+    art = result[0]
 
     # Get content from cache or inline
     cache_path = get_attr(art, "cache-path")
@@ -1580,7 +1700,7 @@ def cmd_show_artifact(args):
     }
 
     if entity_result:
-        ent = entity_result[0]["e"]
+        ent = entity_result[0]
         output["linked_entity"] = {
             "id": get_attr(ent, "id"),
             "name": get_attr(ent, "name"),
@@ -1592,39 +1712,55 @@ def cmd_show_artifact(args):
 def cmd_show_component(args):
     """Show component details."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                comp_query = f'''match $c isa techrecon-component, has id "{args.id}";
-                fetch $c: id, name, description, techrecon-component-type,
-                    techrecon-component-role, techrecon-file-path;'''
-                comp_result = list(tx.query.fetch(comp_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            comp_query = f'''match $c isa techrecon-component, has id "{args.id}";
+            fetch {{
+                "id": $c.id,
+                "name": $c.name,
+                "description": $c.description,
+                "techrecon-component-type": $c.techrecon-component-type,
+                "techrecon-component-role": $c.techrecon-component-role,
+                "techrecon-file-path": $c.techrecon-file-path
+            }};'''
+            comp_result = list(tx.query(comp_query).resolve())
 
-                if not comp_result:
-                    print(json.dumps({"success": False, "error": "Component not found"}))
-                    return
+            if not comp_result:
+                print(json.dumps({"success": False, "error": "Component not found"}))
+                return
 
-                # Get parent system
-                sys_query = f'''match
-                    $c isa techrecon-component, has id "{args.id}";
-                    (system: $s, component: $c) isa techrecon-has-component;
-                fetch $s: id, name;'''
-                sys_result = list(tx.query.fetch(sys_query))
+            # Get parent system
+            sys_query = f'''match
+                $c isa techrecon-component, has id "{args.id}";
+                (system: $s, component: $c) isa techrecon-has-component;
+            fetch {{
+                "id": $s.id,
+                "name": $s.name
+            }};'''
+            sys_result = list(tx.query(sys_query).resolve())
 
-                # Get concepts
-                con_query = f'''match
-                    $c isa techrecon-component, has id "{args.id}";
-                    (component: $c, concept: $con) isa techrecon-uses-concept;
-                fetch $con: id, name, techrecon-concept-category;'''
-                con_result = list(tx.query.fetch(con_query))
+            # Get concepts
+            con_query = f'''match
+                $c isa techrecon-component, has id "{args.id}";
+                (component: $c, concept: $con) isa techrecon-uses-concept;
+            fetch {{
+                "id": $con.id,
+                "name": $con.name,
+                "techrecon-concept-category": $con.techrecon-concept-category
+            }};'''
+            con_result = list(tx.query(con_query).resolve())
 
-                # Get notes
-                notes_query = f'''match
-                    $c isa techrecon-component, has id "{args.id}";
-                    (note: $n, subject: $c) isa aboutness;
-                fetch $n: id, name, content;'''
-                notes_result = list(tx.query.fetch(notes_query))
+            # Get notes
+            notes_query = f'''match
+                $c isa techrecon-component, has id "{args.id}";
+                (note: $n, subject: $c) isa aboutness;
+            fetch {{
+                "id": $n.id,
+                "name": $n.name,
+                "content": $n.content
+            }};'''
+            notes_result = list(tx.query(notes_query).resolve())
 
-    c = comp_result[0]["c"]
+    c = comp_result[0]
     output = {
         "success": True,
         "component": {
@@ -1636,18 +1772,18 @@ def cmd_show_component(args):
             "file_path": get_attr(c, "techrecon-file-path"),
         },
         "system": {
-            "id": get_attr(sys_result[0]["s"], "id"),
-            "name": get_attr(sys_result[0]["s"], "name"),
+            "id": sys_result[0].get("id"),
+            "name": sys_result[0].get("name"),
         } if sys_result else None,
         "concepts": [{
-            "id": get_attr(r["con"], "id"),
-            "name": get_attr(r["con"], "name"),
-            "category": get_attr(r["con"], "techrecon-concept-category"),
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "category": r.get("techrecon-concept-category"),
         } for r in con_result],
         "notes": [{
-            "id": get_attr(n["n"], "id"),
-            "name": get_attr(n["n"], "name"),
-            "content": get_attr(n["n"], "content"),
+            "id": n.get("id"),
+            "name": n.get("name"),
+            "content": n.get("content"),
         } for n in notes_result],
     }
 
@@ -1657,31 +1793,42 @@ def cmd_show_component(args):
 def cmd_show_concept(args):
     """Show concept details."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                con_query = f'''match $c isa techrecon-concept, has id "{args.id}";
-                fetch $c: id, name, description, techrecon-concept-category;'''
-                con_result = list(tx.query.fetch(con_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            con_query = f'''match $c isa techrecon-concept, has id "{args.id}";
+            fetch {{
+                "id": $c.id,
+                "name": $c.name,
+                "description": $c.description,
+                "techrecon-concept-category": $c.techrecon-concept-category
+            }};'''
+            con_result = list(tx.query(con_query).resolve())
 
-                if not con_result:
-                    print(json.dumps({"success": False, "error": "Concept not found"}))
-                    return
+            if not con_result:
+                print(json.dumps({"success": False, "error": "Concept not found"}))
+                return
 
-                # Get components using this concept
-                comp_query = f'''match
-                    $con isa techrecon-concept, has id "{args.id}";
-                    (component: $c, concept: $con) isa techrecon-uses-concept;
-                fetch $c: id, name;'''
-                comp_result = list(tx.query.fetch(comp_query))
+            # Get components using this concept
+            comp_query = f'''match
+                $con isa techrecon-concept, has id "{args.id}";
+                (component: $c, concept: $con) isa techrecon-uses-concept;
+            fetch {{
+                "id": $c.id,
+                "name": $c.name
+            }};'''
+            comp_result = list(tx.query(comp_query).resolve())
 
-                # Get notes
-                notes_query = f'''match
-                    $con isa techrecon-concept, has id "{args.id}";
-                    (note: $n, subject: $con) isa aboutness;
-                fetch $n: id, name, content;'''
-                notes_result = list(tx.query.fetch(notes_query))
+            # Get notes
+            notes_query = f'''match
+                $con isa techrecon-concept, has id "{args.id}";
+                (note: $n, subject: $con) isa aboutness;
+            fetch {{
+                "id": $n.id,
+                "name": $n.name,
+                "content": $n.content
+            }};'''
+            notes_result = list(tx.query(notes_query).resolve())
 
-    c = con_result[0]["c"]
+    c = con_result[0]
     output = {
         "success": True,
         "concept": {
@@ -1691,13 +1838,13 @@ def cmd_show_concept(args):
             "category": get_attr(c, "techrecon-concept-category"),
         },
         "used_by_components": [{
-            "id": get_attr(r["c"], "id"),
-            "name": get_attr(r["c"], "name"),
+            "id": r.get("id"),
+            "name": r.get("name"),
         } for r in comp_result],
         "notes": [{
-            "id": get_attr(n["n"], "id"),
-            "name": get_attr(n["n"], "name"),
-            "content": get_attr(n["n"], "content"),
+            "id": n.get("id"),
+            "name": n.get("name"),
+            "content": n.get("content"),
         } for n in notes_result],
     }
 
@@ -1707,31 +1854,43 @@ def cmd_show_concept(args):
 def cmd_show_data_model(args):
     """Show data model details."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                model_query = f'''match $m isa techrecon-data-model, has id "{args.id}";
-                fetch $m: id, name, description, techrecon-model-format, techrecon-doc-url;'''
-                model_result = list(tx.query.fetch(model_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            model_query = f'''match $m isa techrecon-data-model, has id "{args.id}";
+            fetch {{
+                "id": $m.id,
+                "name": $m.name,
+                "description": $m.description,
+                "techrecon-model-format": $m.techrecon-model-format,
+                "techrecon-doc-url": $m.techrecon-doc-url
+            }};'''
+            model_result = list(tx.query(model_query).resolve())
 
-                if not model_result:
-                    print(json.dumps({"success": False, "error": "Data model not found"}))
-                    return
+            if not model_result:
+                print(json.dumps({"success": False, "error": "Data model not found"}))
+                return
 
-                # Get systems using this model
-                sys_query = f'''match
-                    $m isa techrecon-data-model, has id "{args.id}";
-                    (system: $s, data-model: $m) isa techrecon-has-data-model;
-                fetch $s: id, name;'''
-                sys_result = list(tx.query.fetch(sys_query))
+            # Get systems using this model
+            sys_query = f'''match
+                $m isa techrecon-data-model, has id "{args.id}";
+                (system: $s, data-model: $m) isa techrecon-has-data-model;
+            fetch {{
+                "id": $s.id,
+                "name": $s.name
+            }};'''
+            sys_result = list(tx.query(sys_query).resolve())
 
-                # Get notes
-                notes_query = f'''match
-                    $m isa techrecon-data-model, has id "{args.id}";
-                    (note: $n, subject: $m) isa aboutness;
-                fetch $n: id, name, content;'''
-                notes_result = list(tx.query.fetch(notes_query))
+            # Get notes
+            notes_query = f'''match
+                $m isa techrecon-data-model, has id "{args.id}";
+                (note: $n, subject: $m) isa aboutness;
+            fetch {{
+                "id": $n.id,
+                "name": $n.name,
+                "content": $n.content
+            }};'''
+            notes_result = list(tx.query(notes_query).resolve())
 
-    m = model_result[0]["m"]
+    m = model_result[0]
     output = {
         "success": True,
         "data_model": {
@@ -1742,13 +1901,13 @@ def cmd_show_data_model(args):
             "doc_url": get_attr(m, "techrecon-doc-url"),
         },
         "systems": [{
-            "id": get_attr(s["s"], "id"),
-            "name": get_attr(s["s"], "name"),
+            "id": s.get("id"),
+            "name": s.get("name"),
         } for s in sys_result],
         "notes": [{
-            "id": get_attr(n["n"], "id"),
-            "name": get_attr(n["n"], "name"),
-            "content": get_attr(n["n"], "content"),
+            "id": n.get("id"),
+            "name": n.get("name"),
+            "content": n.get("content"),
         } for n in notes_result],
     }
 
@@ -1798,25 +1957,24 @@ def cmd_add_note(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Link to subject
-            with session.transaction(TransactionType.WRITE) as tx:
-                about_query = f'''match
-                    $n isa note, has id "{note_id}";
-                    $s isa entity, has id "{args.about}";
-                insert (note: $n, subject: $s) isa aboutness;'''
-                tx.query.insert(about_query)
-                tx.commit()
+        # Link to subject
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            about_query = f'''match
+                $n isa note, has id "{note_id}";
+                $s isa entity, has id "{args.about}";
+            insert (note: $n, subject: $s) isa aboutness;'''
+            tx.query(about_query).resolve()
+            tx.commit()
 
-            # Add to investigation
-            if args.investigation:
-                add_to_collection(session, note_id, args.investigation)
+        # Add to investigation
+        if args.investigation:
+            add_to_collection(driver, note_id, args.investigation)
 
-            apply_tags(session, note_id, "note", args.tags)
+        apply_tags(driver, note_id, "note", args.tags)
 
     print(json.dumps({
         "success": True,
@@ -1859,28 +2017,27 @@ def cmd_add_fragment(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
+
+        # Link to source artifact via fragmentation
+        if args.source:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'''match
+                    $a isa artifact, has id "{args.source}";
+                    $f isa fragment, has id "{frag_id}";
+                insert (whole: $a, part: $f) isa fragmentation;''').resolve()
                 tx.commit()
 
-            # Link to source artifact via fragmentation
-            if args.source:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.insert(f'''match
-                        $a isa artifact, has id "{args.source}";
-                        $f isa fragment, has id "{frag_id}";
-                    insert (whole: $a, part: $f) isa fragmentation;''')
-                    tx.commit()
+        # Tag fragment with the subject entity's ID for traceability
+        if args.about:
+            apply_tags(driver, frag_id, "fragment", [f"about:{args.about}"])
 
-            # Tag fragment with the subject entity's ID for traceability
-            if args.about:
-                apply_tags(session, frag_id, "fragment", [f"about:{args.about}"])
+        if args.investigation:
+            add_to_collection(driver, frag_id, args.investigation)
 
-            if args.investigation:
-                add_to_collection(session, frag_id, args.investigation)
-
-            apply_tags(session, frag_id, "fragment", args.tags)
+        apply_tags(driver, frag_id, "fragment", args.tags)
 
     print(json.dumps({
         "success": True,
@@ -1899,8 +2056,7 @@ def cmd_add_fragment(args):
 def cmd_tag(args):
     """Tag an entity."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            apply_tags(session, args.entity, "entity", [args.tag])
+        apply_tags(driver, args.entity, "entity", [args.tag])
 
     print(json.dumps({"success": True, "entity": args.entity, "tag": args.tag}))
 
@@ -1908,19 +2064,21 @@ def cmd_tag(args):
 def cmd_search_tag(args):
     """Search entities by tag."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = f'''match
-                    $t isa tag, has name "{args.tag}";
-                    (tagged-entity: $e, tag: $t) isa tagging;
-                fetch $e: id, name;'''
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = f'''match
+                $t isa tag, has name "{args.tag}";
+                (tagged-entity: $e, tag: $t) isa tagging;
+            fetch {{
+                "id": $e.id,
+                "name": $e.name
+            }};'''
+            results = list(tx.query(query).resolve())
 
     entities = []
     for r in results:
         entities.append({
-            "id": get_attr(r["e"], "id"),
-            "name": get_attr(r["e"], "name"),
+            "id": r.get("id"),
+            "name": r.get("name"),
         })
 
     print(json.dumps({

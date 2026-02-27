@@ -35,7 +35,7 @@ except ImportError:
 
 # TypeDB imports
 try:
-    from typedb.driver import TypeDB, SessionType, TransactionType
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
     TYPEDB_AVAILABLE = True
 except ImportError:
     TYPEDB_AVAILABLE = False
@@ -44,6 +44,8 @@ except ImportError:
 TYPEDB_HOST = os.getenv("TYPEDB_HOST", "localhost")
 TYPEDB_PORT = int(os.getenv("TYPEDB_PORT", "1729"))
 TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "alhazen_notebook")
+TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
+TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_MODEL = os.getenv("TRIAGE_MODEL", "qwen3:8b")
 
@@ -103,19 +105,21 @@ Respond with ONLY a JSON object:
 
 def get_driver():
     """Get TypeDB driver."""
-    return TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
+    return TypeDB.driver(
+        f"{TYPEDB_HOST}:{TYPEDB_PORT}",
+        Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD),
+        DriverOptions(is_tls_enabled=False),
+    )
 
 
 def get_attr(entity_map: dict, attr_name: str, default=""):
-    """Extract attribute value from TypeDB fetch result."""
+    """Extract attribute value from TypeDB 3.x fetch result (plain Python dicts)."""
     val = entity_map.get(attr_name)
     if val is None:
         return default
-    if isinstance(val, dict):
-        return val.get("value", default)
     if isinstance(val, list) and val:
-        return val[0].get("value", default)
-    return default
+        return val[0] if val[0] is not None else default
+    return val if val is not None else default
 
 
 def escape_string(s: str) -> str:
@@ -222,20 +226,26 @@ def load_candidates(status: str = "new", limit: int = 0) -> list[dict]:
     """Load candidates from TypeDB."""
     candidates = []
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = f'''match $c isa jobhunt-candidate, has candidate-status "{status}";
-                    fetch $c: id, name, job-url, location, external-job-id, description;'''
-                results = list(tx.query.fetch(query))
-                for r in results:
-                    candidates.append({
-                        "id": get_attr(r["c"], "id"),
-                        "title": get_attr(r["c"], "name"),
-                        "url": get_attr(r["c"], "job-url"),
-                        "location": get_attr(r["c"], "location"),
-                        "external_id": get_attr(r["c"], "external-job-id"),
-                        "description": get_attr(r["c"], "description"),
-                    })
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = f'''match $c isa jobhunt-candidate, has candidate-status "{status}";
+                fetch {{
+                    "id": $c.id,
+                    "name": $c.name,
+                    "job-url": $c.job-url,
+                    "location": $c.location,
+                    "external-job-id": $c.external-job-id,
+                    "description": $c.description
+                }};'''
+            results = list(tx.query(query).resolve())
+            for r in results:
+                candidates.append({
+                    "id": r.get("id"),
+                    "title": r.get("name"),
+                    "url": r.get("job-url"),
+                    "location": r.get("location"),
+                    "external_id": r.get("external-job-id"),
+                    "description": r.get("description"),
+                })
     if limit:
         candidates = candidates[:limit]
     return candidates
@@ -246,31 +256,30 @@ def update_candidate_status(candidate_id: str, new_status: str,
                             triage_reason: str | None = None):
     """Update candidate status and optionally relevance-score and triage-reason in TypeDB."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.delete(f'''match
-                    $c isa jobhunt-candidate, has id "{candidate_id}", has candidate-status $s;
-                    delete $c has $s;''')
-                tx.query.insert(f'''match
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $c isa jobhunt-candidate, has id "{candidate_id}", has candidate-status $s;
+                delete $c has $s;''').resolve()
+            tx.query(f'''match
+                $c isa jobhunt-candidate, has id "{candidate_id}";
+                insert $c has candidate-status "{new_status}";''').resolve()
+            if relevance_score is not None:
+                # Delete old score if exists, then insert new one
+                tx.query(f'''match
+                    $c isa jobhunt-candidate, has id "{candidate_id}", has relevance-score $rs;
+                    delete $c has $rs;''').resolve()
+                tx.query(f'''match
                     $c isa jobhunt-candidate, has id "{candidate_id}";
-                    insert $c has candidate-status "{new_status}";''')
-                if relevance_score is not None:
-                    # Delete old score if exists, then insert new one
-                    tx.query.delete(f'''match
-                        $c isa jobhunt-candidate, has id "{candidate_id}", has relevance-score $rs;
-                        delete $c has $rs;''')
-                    tx.query.insert(f'''match
-                        $c isa jobhunt-candidate, has id "{candidate_id}";
-                        insert $c has relevance-score {relevance_score};''')
-                if triage_reason is not None:
-                    # Delete old reason if exists, then insert new one
-                    tx.query.delete(f'''match
-                        $c isa jobhunt-candidate, has id "{candidate_id}", has triage-reason $tr;
-                        delete $c has $tr;''')
-                    tx.query.insert(f'''match
-                        $c isa jobhunt-candidate, has id "{candidate_id}";
-                        insert $c has triage-reason "{escape_string(triage_reason)}";''')
-                tx.commit()
+                    insert $c has relevance-score {relevance_score};''').resolve()
+            if triage_reason is not None:
+                # Delete old reason if exists, then insert new one
+                tx.query(f'''match
+                    $c isa jobhunt-candidate, has id "{candidate_id}", has triage-reason $tr;
+                    delete $c has $tr;''').resolve()
+                tx.query(f'''match
+                    $c isa jobhunt-candidate, has id "{candidate_id}";
+                    insert $c has triage-reason "{escape_string(triage_reason)}";''').resolve()
+            tx.commit()
 
 
 def extract_source_from_id(external_id: str) -> str:

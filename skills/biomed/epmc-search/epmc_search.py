@@ -45,13 +45,13 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 try:
-    from typedb.driver import SessionType, TransactionType, TypeDB
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
     TYPEDB_AVAILABLE = True
 except ImportError:
     TYPEDB_AVAILABLE = False
     print(
-        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=2.25.0,<3.0.0'",
+        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.8.0'",
         file=sys.stderr,
     )
 
@@ -60,6 +60,8 @@ except ImportError:
 TYPEDB_HOST = os.getenv("TYPEDB_HOST", "localhost")
 TYPEDB_PORT = int(os.getenv("TYPEDB_PORT", "1729"))
 TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "alhazen")
+TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
+TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 
 # EPMC API Configuration
 EPMC_API_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
@@ -69,7 +71,11 @@ REQUEST_TIMEOUT = 60
 
 def get_driver():
     """Get TypeDB driver connection."""
-    return TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
+    return TypeDB.driver(
+        f"{TYPEDB_HOST}:{TYPEDB_PORT}",
+        Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD),
+        DriverOptions(is_tls_enabled=False),
+    )
 
 
 def generate_id(prefix: str) -> str:
@@ -307,121 +313,120 @@ def insert_paper_to_typedb(driver, paper: dict, collection_id: str | None = None
 
     query += ";"
 
-    with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-        # Check if paper already exists
-        with session.transaction(TransactionType.READ) as tx:
-            check_query = f'match $p isa scilit-paper, has doi "{paper["doi"]}"; fetch $p: id;'
-            existing = list(tx.query.fetch(check_query))
-            if existing:
-                # Paper already exists, return existing ID
-                return paper_id
+    # Check if paper already exists
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+        check_query = f'match $p isa scilit-paper, has doi "{paper["doi"]}"; fetch {{ "id": $p.id }};' 
+        existing = list(tx.query(check_query).resolve())
+        if existing:
+            # Paper already exists, return existing ID
+            return paper_id
 
-        # Insert paper
-        with session.transaction(TransactionType.WRITE) as tx:
-            tx.query.insert(query)
-            tx.commit()
+    # Insert paper
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+        tx.query(query).resolve()
+        tx.commit()
 
-        # Create citation record artifact
-        artifact_id = generate_id("artifact")
-        artifact_query = f'''insert $a isa scilit-citation-record,
-            has id "{artifact_id}",
-            has format "epmc-citation",
-            has source-uri "https://europepmc.org/article/{paper.get("source", "MED")}/{paper.get("epmc_id", paper["doi"])}",
+    # Create citation record artifact
+    artifact_id = generate_id("artifact")
+    artifact_query = f'''insert $a isa scilit-citation-record,
+        has id "{artifact_id}",
+        has format "epmc-citation",
+        has source-uri "https://europepmc.org/article/{paper.get("source", "MED")}/{paper.get("epmc_id", paper["doi"])}",
+        has created-at {timestamp};'''
+
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+        tx.query(artifact_query).resolve()
+        tx.commit()
+
+    # Link artifact to paper
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+        rel_query = f'''match
+            $p isa scilit-paper, has id "{paper_id}";
+            $a isa artifact, has id "{artifact_id}";
+        insert (artifact: $a, referent: $p) isa representation;'''
+        tx.query(rel_query).resolve()
+        tx.commit()
+
+    # Create title fragment
+    if paper.get("title"):
+        title_frag_id = generate_id("fragment")
+        title_frag_query = f'''insert $f isa scilit-section,
+            has id "{title_frag_id}",
+            has content "{escape_string(paper["title"])}",
+            has section-type "title",
+            has offset 0,
+            has length {len(paper["title"])},
             has created-at {timestamp};'''
 
-        with session.transaction(TransactionType.WRITE) as tx:
-            tx.query.insert(artifact_query)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(title_frag_query).resolve()
             tx.commit()
 
-        # Link artifact to paper
-        with session.transaction(TransactionType.WRITE) as tx:
-            rel_query = f'''match
-                $p isa scilit-paper, has id "{paper_id}";
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            frag_rel_query = f'''match
                 $a isa artifact, has id "{artifact_id}";
-            insert (artifact: $a, referent: $p) isa representation;'''
-            tx.query.insert(rel_query)
+                $f isa fragment, has id "{title_frag_id}";
+            insert (whole: $a, part: $f) isa fragmentation;'''
+            tx.query(frag_rel_query).resolve()
             tx.commit()
 
-        # Create title fragment
-        if paper.get("title"):
-            title_frag_id = generate_id("fragment")
-            title_frag_query = f'''insert $f isa scilit-section,
-                has id "{title_frag_id}",
-                has content "{escape_string(paper["title"])}",
-                has section-type "title",
-                has offset 0,
-                has length {len(paper["title"])},
+    # Create abstract fragment
+    if paper.get("abstract"):
+        abs_frag_id = generate_id("fragment")
+        title_len = len(paper.get("title", "")) + 1
+        abs_frag_query = f'''insert $f isa scilit-section,
+            has id "{abs_frag_id}",
+            has content "{escape_string(paper["abstract"])}",
+            has section-type "abstract",
+            has offset {title_len},
+            has length {len(paper["abstract"])},
+            has created-at {timestamp};'''
+
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(abs_frag_query).resolve()
+            tx.commit()
+
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            frag_rel_query = f'''match
+                $a isa artifact, has id "{artifact_id}";
+                $f isa fragment, has id "{abs_frag_id}";
+            insert (whole: $a, part: $f) isa fragmentation;'''
+            tx.query(frag_rel_query).resolve()
+            tx.commit()
+
+    # Add to collection if specified
+    if collection_id:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            coll_query = f'''match
+                $c isa collection, has id "{collection_id}";
+                $p isa scilit-paper, has id "{paper_id}";
+            insert (collection: $c, member: $p) isa collection-membership,
                 has created-at {timestamp};'''
+            tx.query(coll_query).resolve()
+            tx.commit()
 
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(title_frag_query)
+    # Tag with publication type
+    if paper.get("pub_type_label"):
+        tag_id = generate_id("tag")
+        tag_name = paper["pub_type_label"]
+
+        # Check if tag exists
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            tag_check = f'match $t isa tag, has name "{tag_name}"; fetch {{ "id": $t.id }};' 
+            existing_tag = list(tx.query(tag_check).resolve())
+
+        if not existing_tag:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";').resolve()
                 tx.commit()
 
-            with session.transaction(TransactionType.WRITE) as tx:
-                frag_rel_query = f'''match
-                    $a isa artifact, has id "{artifact_id}";
-                    $f isa fragment, has id "{title_frag_id}";
-                insert (whole: $a, part: $f) isa fragmentation;'''
-                tx.query.insert(frag_rel_query)
-                tx.commit()
-
-        # Create abstract fragment
-        if paper.get("abstract"):
-            abs_frag_id = generate_id("fragment")
-            title_len = len(paper.get("title", "")) + 1
-            abs_frag_query = f'''insert $f isa scilit-section,
-                has id "{abs_frag_id}",
-                has content "{escape_string(paper["abstract"])}",
-                has section-type "abstract",
-                has offset {title_len},
-                has length {len(paper["abstract"])},
-                has created-at {timestamp};'''
-
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(abs_frag_query)
-                tx.commit()
-
-            with session.transaction(TransactionType.WRITE) as tx:
-                frag_rel_query = f'''match
-                    $a isa artifact, has id "{artifact_id}";
-                    $f isa fragment, has id "{abs_frag_id}";
-                insert (whole: $a, part: $f) isa fragmentation;'''
-                tx.query.insert(frag_rel_query)
-                tx.commit()
-
-        # Add to collection if specified
-        if collection_id:
-            with session.transaction(TransactionType.WRITE) as tx:
-                coll_query = f'''match
-                    $c isa collection, has id "{collection_id}";
-                    $p isa scilit-paper, has id "{paper_id}";
-                insert (collection: $c, member: $p) isa collection-membership,
-                    has created-at {timestamp};'''
-                tx.query.insert(coll_query)
-                tx.commit()
-
-        # Tag with publication type
-        if paper.get("pub_type_label"):
-            tag_id = generate_id("tag")
-            tag_name = paper["pub_type_label"]
-
-            # Check if tag exists
-            with session.transaction(TransactionType.READ) as tx:
-                tag_check = f'match $t isa tag, has name "{tag_name}"; fetch $t: id;'
-                existing_tag = list(tx.query.fetch(tag_check))
-
-            if not existing_tag:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.insert(f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";')
-                    tx.commit()
-
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(f'''match
-                    $p isa scilit-paper, has id "{paper_id}";
-                    $t isa tag, has name "{tag_name}";
-                insert (tagged-entity: $p, tag: $t) isa tagging,
-                    has created-at {timestamp};''')
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $p isa scilit-paper, has id "{paper_id}";
+                $t isa tag, has name "{tag_name}";
+            insert (tagged-entity: $p, tag: $t) isa tagging,
+                has created-at {timestamp};''').resolve()
+            tx.commit()
 
     return paper_id
 
@@ -452,17 +457,16 @@ def cmd_search(args):
     timestamp = get_timestamp()
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                coll_query = f'''insert $c isa collection,
-                    has id "{collection_id}",
-                    has name "{escape_string(collection_name)}",
-                    has description "EPMC search results for: {escape_string(args.query)}",
-                    has logical-query "{escape_string(args.query)}",
-                    has is-extensional true,
-                    has created-at {timestamp};'''
-                tx.query.insert(coll_query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            coll_query = f'''insert $c isa collection,
+                has id "{collection_id}",
+                has name "{escape_string(collection_name)}",
+                has description "EPMC search results for: {escape_string(args.query)}",
+                has logical-query "{escape_string(args.query)}",
+                has is-extensional true,
+                has created-at {timestamp};'''
+            tx.query(coll_query).resolve()
+            tx.commit()
 
         # Process and store papers
         stored_count = 0
@@ -551,11 +555,15 @@ def cmd_fetch_paper(args):
 def cmd_list_collections(args):
     """List all collections created from EPMC searches."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match $c isa collection, has logical-query $q;
-                    fetch $c: id, name, description, logical-query;"""
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match $c isa collection, has logical-query $q;
+                fetch {
+                    "id": $c.id,
+                    "name": $c.name,
+                    "description": $c.description,
+                    "logical-query": $c.logical-query
+                };"""
+            results = list(tx.query(query).resolve())
 
     print(json.dumps({"success": True, "collections": results, "count": len(results)}, indent=2))
 

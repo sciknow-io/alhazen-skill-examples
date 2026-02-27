@@ -87,13 +87,13 @@ except ImportError:
     )
 
 try:
-    from typedb.driver import SessionType, TransactionType, TypeDB
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
     TYPEDB_AVAILABLE = True
 except ImportError:
     TYPEDB_AVAILABLE = False
     print(
-        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=2.25.0,<3.0.0'",
+        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.8.0'",
         file=sys.stderr,
     )
 
@@ -126,11 +126,17 @@ except ImportError:
 TYPEDB_HOST = os.getenv("TYPEDB_HOST", "localhost")
 TYPEDB_PORT = int(os.getenv("TYPEDB_PORT", "1729"))
 TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "alhazen_notebook")
+TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
+TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 
 
 def get_driver():
     """Get TypeDB driver connection."""
-    return TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
+    return TypeDB.driver(
+        f"{TYPEDB_HOST}:{TYPEDB_PORT}",
+        Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD),
+        DriverOptions(is_tls_enabled=False),
+    )
 
 
 def generate_id(prefix: str) -> str:
@@ -146,17 +152,11 @@ def escape_string(s: str) -> str:
 
 
 def get_attr(entity: dict, attr_name: str, default=None):
-    """Safely extract attribute value from TypeDB fetch result.
+    """Safely extract attribute value from TypeDB 3.x fetch result.
 
-    TypeDB fetch returns attributes as arrays, e.g.:
-    {'id': [{'value': 'abc', 'type': {...}}], 'name': [...]}
-
-    This helper extracts the first value or returns default.
+    TypeDB 3.x fetch returns plain Python dicts directly.
     """
-    attr_list = entity.get(attr_name, [])
-    if attr_list and len(attr_list) > 0:
-        return attr_list[0].get("value", default)
-    return default
+    return entity.get(attr_name, default)
 
 
 def get_timestamp() -> str:
@@ -271,102 +271,98 @@ def cmd_ingest_job(args):
     placeholder_name = title if title else f"Job posting from {url[:50]}"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Create position placeholder (Claude will update with extracted info)
-            with session.transaction(TransactionType.WRITE) as tx:
-                position_query = f'''insert $p isa jobhunt-position,
-                    has id "{position_id}",
-                    has name "{escape_string(placeholder_name)}",
-                    has job-url "{escape_string(url)}",
-                    has created-at {timestamp}'''
+        # Create position placeholder (Claude will update with extracted info)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            position_query = f'''insert $p isa jobhunt-position,
+                has id "{position_id}",
+                has name "{escape_string(placeholder_name)}",
+                has job-url "{escape_string(url)}",
+                has created-at {timestamp}'''
 
-                if args.priority:
-                    position_query += f', has priority-level "{args.priority}"'
+            if args.priority:
+                position_query += f', has priority-level "{args.priority}"'
 
-                position_query += ";"
-                tx.query.insert(position_query)
-                tx.commit()
+            position_query += ";"
+            tx.query(position_query).resolve()
+            tx.commit()
 
-            # Create job description artifact with content (inline or cached)
-            with session.transaction(TransactionType.WRITE) as tx:
-                # Check if content should be cached externally
-                if CACHE_AVAILABLE and should_cache(content):
-                    # Store in cache
-                    cache_result = save_to_cache(
-                        artifact_id=artifact_id,
-                        content=content,
-                        mime_type="text/html",
-                    )
-                    artifact_query = f'''insert $a isa jobhunt-job-description,
-                        has id "{artifact_id}",
-                        has name "Job Description: {escape_string(placeholder_name)}",
-                        has cache-path "{cache_result['cache_path']}",
-                        has mime-type "text/html",
-                        has file-size {cache_result['file_size']},
-                        has content-hash "{cache_result['content_hash']}",
-                        has source-uri "{escape_string(url)}",
-                        has created-at {timestamp};'''
-                else:
-                    # Store inline
-                    artifact_query = f'''insert $a isa jobhunt-job-description,
-                        has id "{artifact_id}",
-                        has name "Job Description: {escape_string(placeholder_name)}",
-                        has content "{escape_string(content)}",
-                        has source-uri "{escape_string(url)}",
-                        has created-at {timestamp};'''
-                tx.query.insert(artifact_query)
-                tx.commit()
-
-            # Link artifact to position
-            with session.transaction(TransactionType.WRITE) as tx:
-                rep_query = f'''match
-                    $a isa jobhunt-job-description, has id "{artifact_id}";
-                    $p isa jobhunt-position, has id "{position_id}";
-                insert (artifact: $a, referent: $p) isa representation;'''
-                tx.query.insert(rep_query)
-                tx.commit()
-
-            # Create initial application note with researching status
-            app_note_id = generate_id("note")
-            with session.transaction(TransactionType.WRITE) as tx:
-                note_query = f'''insert $n isa jobhunt-application-note,
-                    has id "{app_note_id}",
-                    has name "Application Status",
-                    has application-status "researching",
+        # Create job description artifact with content (inline or cached)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            if CACHE_AVAILABLE and should_cache(content):
+                cache_result = save_to_cache(
+                    artifact_id=artifact_id,
+                    content=content,
+                    mime_type="text/html",
+                )
+                artifact_query = f'''insert $a isa jobhunt-job-description,
+                    has id "{artifact_id}",
+                    has name "Job Description: {escape_string(placeholder_name)}",
+                    has cache-path "{cache_result['cache_path']}",
+                    has mime-type "text/html",
+                    has file-size {cache_result['file_size']},
+                    has content-hash "{cache_result['content_hash']}",
+                    has source-uri "{escape_string(url)}",
                     has created-at {timestamp};'''
-                tx.query.insert(note_query)
-                tx.commit()
+            else:
+                artifact_query = f'''insert $a isa jobhunt-job-description,
+                    has id "{artifact_id}",
+                    has name "Job Description: {escape_string(placeholder_name)}",
+                    has content "{escape_string(content)}",
+                    has source-uri "{escape_string(url)}",
+                    has created-at {timestamp};'''
+            tx.query(artifact_query).resolve()
+            tx.commit()
 
-            # Link note to position
-            with session.transaction(TransactionType.WRITE) as tx:
-                about_query = f'''match
-                    $n isa note, has id "{app_note_id}";
-                    $p isa jobhunt-position, has id "{position_id}";
-                insert (note: $n, subject: $p) isa aboutness;'''
-                tx.query.insert(about_query)
-                tx.commit()
+        # Link artifact to position
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            rep_query = f'''match
+                $a isa jobhunt-job-description, has id "{artifact_id}";
+                $p isa jobhunt-position, has id "{position_id}";
+            insert (artifact: $a, referent: $p) isa representation;'''
+            tx.query(rep_query).resolve()
+            tx.commit()
 
-            # Add tags if specified
-            if args.tags:
-                for tag_name in args.tags:
-                    tag_id = generate_id("tag")
-                    with session.transaction(TransactionType.READ) as tx:
-                        tag_check = f'match $t isa tag, has name "{tag_name}"; fetch $t: id;'
-                        existing_tag = list(tx.query.fetch(tag_check))
+        # Create initial application note with researching status
+        app_note_id = generate_id("note")
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            note_query = f'''insert $n isa jobhunt-application-note,
+                has id "{app_note_id}",
+                has name "Application Status",
+                has application-status "researching",
+                has created-at {timestamp};'''
+            tx.query(note_query).resolve()
+            tx.commit()
 
-                    if not existing_tag:
-                        with session.transaction(TransactionType.WRITE) as tx:
-                            tx.query.insert(
-                                f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
-                            )
-                            tx.commit()
+        # Link note to position
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            about_query = f'''match
+                $n isa note, has id "{app_note_id}";
+                $p isa jobhunt-position, has id "{position_id}";
+            insert (note: $n, subject: $p) isa aboutness;'''
+            tx.query(about_query).resolve()
+            tx.commit()
 
-                    with session.transaction(TransactionType.WRITE) as tx:
-                        tx.query.insert(f'''match
-                            $p isa jobhunt-position, has id "{position_id}";
-                            $t isa tag, has name "{tag_name}";
-                        insert (tagged-entity: $p, tag: $t) isa tagging;''')
+        # Add tags if specified
+        if args.tags:
+            for tag_name in args.tags:
+                tag_id = generate_id("tag")
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+                    tag_check = f'match $t isa tag, has name "{tag_name}"; fetch {{ "id": $t.id }};' 
+                    existing_tag = list(tx.query(tag_check).resolve())
+
+                if not existing_tag:
+                    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                        tx.query(
+                            f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
+                        ).resolve()
                         tx.commit()
+
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                    tx.query(f'''match
+                        $p isa jobhunt-position, has id "{position_id}";
+                        $t isa tag, has name "{tag_name}";
+                    insert (tagged-entity: $p, tag: $t) isa tagging;''').resolve()
+                    tx.commit()
 
     # Prepare output
     output = {
@@ -387,8 +383,6 @@ def cmd_ingest_job(args):
         output["storage"] = "inline"
 
     print(json.dumps(output, indent=2))
-
-
 def cmd_add_company(args):
     """Add a company to track."""
     company_id = args.id or generate_id("company")
@@ -411,10 +405,9 @@ def cmd_add_company(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "company_id": company_id, "name": args.name}))
 
@@ -446,40 +439,40 @@ def cmd_add_position(args):
 
     query += ";"
 
+    app_note_id = generate_id("note")
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Link to company
-            if args.company:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    rel_query = f'''match
-                        $p isa jobhunt-position, has id "{position_id}";
-                        $c isa jobhunt-company, has id "{args.company}";
-                    insert (position: $p, employer: $c) isa position-at-company;'''
-                    tx.query.insert(rel_query)
-                    tx.commit()
-
-            # Create initial application note
-            app_note_id = generate_id("note")
-            with session.transaction(TransactionType.WRITE) as tx:
-                note_query = f'''insert $n isa jobhunt-application-note,
-                    has id "{app_note_id}",
-                    has name "Application Status",
-                    has application-status "researching",
-                    has created-at {timestamp};'''
-                tx.query.insert(note_query)
-                tx.commit()
-
-            with session.transaction(TransactionType.WRITE) as tx:
-                about_query = f'''match
-                    $n isa note, has id "{app_note_id}";
+        # Link to company
+        if args.company:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                rel_query = f'''match
                     $p isa jobhunt-position, has id "{position_id}";
-                insert (note: $n, subject: $p) isa aboutness;'''
-                tx.query.insert(about_query)
+                    $c isa jobhunt-company, has id "{args.company}";
+                insert (position: $p, employer: $c) isa position-at-company;'''
+                tx.query(rel_query).resolve()
                 tx.commit()
+
+        # Create initial application note
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            note_query = f'''insert $n isa jobhunt-application-note,
+                has id "{app_note_id}",
+                has name "Application Status",
+                has application-status "researching",
+                has created-at {timestamp};'''
+            tx.query(note_query).resolve()
+            tx.commit()
+
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            about_query = f'''match
+                $n isa note, has id "{app_note_id}";
+                $p isa jobhunt-position, has id "{position_id}";
+            insert (note: $n, subject: $p) isa aboutness;'''
+            tx.query(about_query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "position_id": position_id, "title": args.title}))
 
@@ -487,54 +480,51 @@ def cmd_add_position(args):
 def cmd_update_status(args):
     """Update application status for a position."""
     timestamp = get_timestamp()
+    note_id = generate_id("note")
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Find or create application note
-            with session.transaction(TransactionType.READ) as tx:
-                find_query = f'''match
-                    $p isa jobhunt-position, has id "{args.position}";
-                    (note: $n, subject: $p) isa aboutness;
-                    $n isa jobhunt-application-note;
-                fetch $n: id, application-status;'''
-                existing = list(tx.query.fetch(find_query))
+        # Find existing application note
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            find_query = f'''match
+                $p isa jobhunt-position, has id "{args.position}";
+                (note: $n, subject: $p) isa aboutness;
+                $n isa jobhunt-application-note;
+            fetch {{ "id": $n.id }};'''
+            existing = list(tx.query(find_query).resolve())
 
-            if existing:
-                # Update existing note - delete old and create new with updated status
-                old_note_id = existing[0]["n"]["id"][0]["value"]
-
-                # Delete old note
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.delete(
-                        f'match $n isa note, has id "{old_note_id}"; delete $n isa note;'
-                    )
-                    tx.commit()
-
-            # Create new application note with updated status
-            note_id = generate_id("note")
-            note_query = f'''insert $n isa jobhunt-application-note,
-                has id "{note_id}",
-                has name "Application Status",
-                has application-status "{args.status}",
-                has created-at {timestamp}'''
-
-            if args.date:
-                note_query += f", has applied-date {parse_date(args.date)}"
-
-            note_query += ";"
-
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(note_query)
+        if existing:
+            # Delete old application note
+            old_note_id = existing[0].get("id", "")
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(
+                    f'match $n isa note, has id "{old_note_id}"; delete $n isa note;'
+                ).resolve()
                 tx.commit()
 
-            # Link to position
-            with session.transaction(TransactionType.WRITE) as tx:
-                about_query = f'''match
-                    $n isa note, has id "{note_id}";
-                    $p isa jobhunt-position, has id "{args.position}";
-                insert (note: $n, subject: $p) isa aboutness;'''
-                tx.query.insert(about_query)
-                tx.commit()
+        # Create new application note with updated status
+        note_query = f'''insert $n isa jobhunt-application-note,
+            has id "{note_id}",
+            has name "Application Status",
+            has application-status "{args.status}",
+            has created-at {timestamp}'''
+
+        if args.date:
+            note_query += f", has applied-date {parse_date(args.date)}"
+
+        note_query += ";"
+
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(note_query).resolve()
+            tx.commit()
+
+        # Link to position
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            about_query = f'''match
+                $n isa note, has id "{note_id}";
+                $p isa jobhunt-position, has id "{args.position}";
+            insert (note: $n, subject: $p) isa aboutness;'''
+            tx.query(about_query).resolve()
+            tx.commit()
 
     print(
         json.dumps(
@@ -551,36 +541,35 @@ def cmd_update_status(args):
 def cmd_set_short_name(args):
     """Set short display name for a position."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Check if position exists and if it already has a short-name
-            with session.transaction(TransactionType.READ) as tx:
-                check_query = f'''match
-                    $p isa jobhunt-position, has id "{args.position}";
-                fetch $p: short-name;'''
-                existing = list(tx.query.fetch(check_query))
+        # Check if position exists and if it already has a short-name
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            check_query = f'''match
+                $p isa jobhunt-position, has id "{args.position}";
+            fetch {{ "short-name": $p.short-name }};'''
+            existing = list(tx.query(check_query).resolve())
 
-                if not existing:
-                    print(json.dumps({"success": False, "error": "Position not found"}))
-                    return
+        if not existing:
+            print(json.dumps({"success": False, "error": "Position not found"}))
+            return
 
-                has_existing = bool(get_attr(existing[0]["p"], "short-name"))
+        has_existing = bool(existing[0].get("short-name"))
 
-            if has_existing:
-                # Delete old short-name and add new one
-                with session.transaction(TransactionType.WRITE) as tx:
-                    delete_query = f'''match
-                        $p isa jobhunt-position, has id "{args.position}", has short-name $sn;
-                    delete $p has $sn;'''
-                    tx.query.delete(delete_query)
-                    tx.commit()
-
-            # Add new short-name
-            with session.transaction(TransactionType.WRITE) as tx:
-                insert_query = f'''match
-                    $p isa jobhunt-position, has id "{args.position}";
-                insert $p has short-name "{escape_string(args.name)}";'''
-                tx.query.insert(insert_query)
+        if has_existing:
+            # Delete old short-name and add new one
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                delete_query = f'''match
+                    $p isa jobhunt-position, has id "{args.position}", has short-name $sn;
+                delete $p has $sn;'''
+                tx.query(delete_query).resolve()
                 tx.commit()
+
+        # Add new short-name
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            insert_query = f'''match
+                $p isa jobhunt-position, has id "{args.position}";
+            insert $p has short-name "{escape_string(args.name)}";'''
+            tx.query(insert_query).resolve()
+            tx.commit()
 
     print(
         json.dumps(
@@ -641,41 +630,40 @@ def cmd_add_note(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Link to subject
-            with session.transaction(TransactionType.WRITE) as tx:
-                about_query = f'''match
-                    $n isa note, has id "{note_id}";
-                    $s isa entity, has id "{args.about}";
-                insert (note: $n, subject: $s) isa aboutness;'''
-                tx.query.insert(about_query)
-                tx.commit()
+        # Link to subject
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            about_query = f'''match
+                $n isa note, has id "{note_id}";
+                $s isa entity, has id "{args.about}";
+            insert (note: $n, subject: $s) isa aboutness;'''
+            tx.query(about_query).resolve()
+            tx.commit()
 
-            # Add tags
-            if args.tags:
-                for tag_name in args.tags:
-                    tag_id = generate_id("tag")
-                    with session.transaction(TransactionType.READ) as tx:
-                        tag_check = f'match $t isa tag, has name "{tag_name}"; fetch $t: id;'
-                        existing_tag = list(tx.query.fetch(tag_check))
+        # Add tags
+        if args.tags:
+            for tag_name in args.tags:
+                tag_id = generate_id("tag")
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+                    tag_check = f'match $t isa tag, has name "{tag_name}"; fetch {{ "id": $t.id }};'
+                    existing_tag = list(tx.query(tag_check).resolve())
 
-                    if not existing_tag:
-                        with session.transaction(TransactionType.WRITE) as tx:
-                            tx.query.insert(
-                                f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
-                            )
-                            tx.commit()
-
-                    with session.transaction(TransactionType.WRITE) as tx:
-                        tx.query.insert(f'''match
-                            $n isa note, has id "{note_id}";
-                            $t isa tag, has name "{tag_name}";
-                        insert (tagged-entity: $n, tag: $t) isa tagging;''')
+                if not existing_tag:
+                    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                        tx.query(
+                            f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
+                        ).resolve()
                         tx.commit()
+
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                    tx.query(f'''match
+                        $n isa note, has id "{note_id}";
+                        $t isa tag, has name "{tag_name}";
+                    insert (tagged-entity: $n, tag: $t) isa tagging;''').resolve()
+                    tx.commit()
 
     print(json.dumps({"success": True, "note_id": note_id, "about": args.about, "type": args.type}))
 
@@ -702,34 +690,33 @@ def cmd_add_resource(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Tag with skills
-            if args.skills:
-                for skill in args.skills:
-                    tag_id = generate_id("tag")
-                    tag_name = f"skill:{skill}"
+        # Tag with skills
+        if args.skills:
+            for skill in args.skills:
+                tag_id = generate_id("tag")
+                tag_name = f"skill:{skill}"
 
-                    with session.transaction(TransactionType.READ) as tx:
-                        tag_check = f'match $t isa tag, has name "{tag_name}"; fetch $t: id;'
-                        existing_tag = list(tx.query.fetch(tag_check))
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+                    tag_check = f'match $t isa tag, has name "{tag_name}"; fetch {{ "id": $t.id }};'
+                    existing_tag = list(tx.query(tag_check).resolve())
 
-                    if not existing_tag:
-                        with session.transaction(TransactionType.WRITE) as tx:
-                            tx.query.insert(
-                                f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
-                            )
-                            tx.commit()
-
-                    with session.transaction(TransactionType.WRITE) as tx:
-                        tx.query.insert(f'''match
-                            $r isa jobhunt-learning-resource, has id "{resource_id}";
-                            $t isa tag, has name "{tag_name}";
-                        insert (tagged-entity: $r, tag: $t) isa tagging;''')
+                if not existing_tag:
+                    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                        tx.query(
+                            f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
+                        ).resolve()
                         tx.commit()
+
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                    tx.query(f'''match
+                        $r isa jobhunt-learning-resource, has id "{resource_id}";
+                        $t isa tag, has name "{tag_name}";
+                    insert (tagged-entity: $r, tag: $t) isa tagging;''').resolve()
+                    tx.commit()
 
     print(
         json.dumps(
@@ -741,14 +728,13 @@ def cmd_add_resource(args):
 def cmd_link_resource(args):
     """Link a learning resource to a skill requirement."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                link_query = f'''match
-                    $r isa jobhunt-learning-resource, has id "{args.resource}";
-                    $req isa jobhunt-requirement, has id "{args.requirement}";
-                insert (resource: $r, requirement: $req) isa addresses-requirement;'''
-                tx.query.insert(link_query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            link_query = f'''match
+                $r isa jobhunt-learning-resource, has id "{args.resource}";
+                $req isa jobhunt-requirement, has id "{args.requirement}";
+            insert (resource: $r, requirement: $req) isa addresses-requirement;'''
+            tx.query(link_query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "resource": args.resource, "requirement": args.requirement}))
 
@@ -761,61 +747,60 @@ def cmd_link_collection(args):
     matching requirements across positions.
     """
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            if args.requirement:
-                # Link to specific requirement
-                with session.transaction(TransactionType.WRITE) as tx:
-                    link_query = f'''match
-                        $c isa collection, has id "{args.collection}";
-                        $req isa jobhunt-requirement, has id "{args.requirement}";
-                    insert (resource: $c, requirement: $req) isa addresses-requirement;'''
-                    tx.query.insert(link_query)
-                    tx.commit()
-                print(json.dumps({
-                    "success": True,
-                    "collection": args.collection,
-                    "requirement": args.requirement,
-                }))
+        if args.requirement:
+            # Link to specific requirement
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                link_query = f'''match
+                    $c isa collection, has id "{args.collection}";
+                    $req isa jobhunt-requirement, has id "{args.requirement}";
+                insert (resource: $c, requirement: $req) isa addresses-requirement;'''
+                tx.query(link_query).resolve()
+                tx.commit()
+            print(json.dumps({
+                "success": True,
+                "collection": args.collection,
+                "requirement": args.requirement,
+            }))
 
-            elif args.skill:
-                # Link to all requirements matching skill name
-                with session.transaction(TransactionType.READ) as tx:
-                    find_query = f'''match
-                        $req isa jobhunt-requirement, has skill-name "{escape_string(args.skill)}";
-                    fetch $req: id;'''
-                    reqs = list(tx.query.fetch(find_query))
+        elif args.skill:
+            # Link to all requirements matching skill name
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+                find_query = f'''match
+                    $req isa jobhunt-requirement, has skill-name "{escape_string(args.skill)}";
+                fetch {{ "id": $req.id }};'''
+                reqs = list(tx.query(find_query).resolve())
 
-                if not reqs:
-                    print(json.dumps({
-                        "success": False,
-                        "error": f"No requirements found with skill-name '{args.skill}'",
-                    }))
-                    return
-
-                linked = []
-                for r in reqs:
-                    req_id = get_attr(r["req"], "id")
-                    with session.transaction(TransactionType.WRITE) as tx:
-                        link_query = f'''match
-                            $c isa collection, has id "{args.collection}";
-                            $req isa jobhunt-requirement, has id "{req_id}";
-                        insert (resource: $c, requirement: $req) isa addresses-requirement;'''
-                        tx.query.insert(link_query)
-                        tx.commit()
-                    linked.append(req_id)
-
-                print(json.dumps({
-                    "success": True,
-                    "collection": args.collection,
-                    "skill": args.skill,
-                    "linked_requirements": linked,
-                    "count": len(linked),
-                }))
-            else:
+            if not reqs:
                 print(json.dumps({
                     "success": False,
-                    "error": "Must specify either --requirement or --skill",
+                    "error": f"No requirements found with skill-name '{args.skill}'",
                 }))
+                return
+
+            linked = []
+            for r in reqs:
+                req_id = r.get("id", "")
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                    link_query = f'''match
+                        $c isa collection, has id "{args.collection}";
+                        $req isa jobhunt-requirement, has id "{req_id}";
+                    insert (resource: $c, requirement: $req) isa addresses-requirement;'''
+                    tx.query(link_query).resolve()
+                    tx.commit()
+                linked.append(req_id)
+
+            print(json.dumps({
+                "success": True,
+                "collection": args.collection,
+                "skill": args.skill,
+                "linked_requirements": linked,
+                "count": len(linked),
+            }))
+        else:
+            print(json.dumps({
+                "success": False,
+                "error": "Must specify either --requirement or --skill",
+            }))
 
 
 def cmd_link_paper(args):
@@ -825,17 +810,16 @@ def cmd_link_paper(args):
     cites the paper. Both types inherit from domain-thing so they
     can already play citing-item/cited-item roles.
     """
+    timestamp = get_timestamp()
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            timestamp = get_timestamp()
-            with session.transaction(TransactionType.WRITE) as tx:
-                link_query = f'''match
-                    $res isa jobhunt-learning-resource, has id "{args.resource}";
-                    $paper isa scilit-paper, has id "{args.paper}";
-                insert (citing-item: $res, cited-item: $paper) isa citation-reference,
-                    has created-at {timestamp};'''
-                tx.query.insert(link_query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            link_query = f'''match
+                $res isa jobhunt-learning-resource, has id "{args.resource}";
+                $paper isa scilit-paper, has id "{args.paper}";
+            insert (citing-item: $res, cited-item: $paper) isa citation-reference,
+                has created-at {timestamp};'''
+            tx.query(link_query).resolve()
+            tx.commit()
 
     print(json.dumps({
         "success": True,
@@ -847,153 +831,175 @@ def cmd_link_paper(args):
 def cmd_list_pipeline(args):
     """List positions in the pipeline."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Build query - fetch positions with their application status
-                query = """match
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Build query - fetch positions with their application status
+            match_clause = """match
                     $p isa jobhunt-position;
                     (note: $n, subject: $p) isa aboutness;
                     $n isa jobhunt-application-note, has application-status $status;"""
 
-                if args.status:
-                    query = query.replace(
-                        "has application-status $status", f'has application-status "{args.status}"'
-                    )
+            if args.status:
+                match_clause = match_clause.replace(
+                    "has application-status $status", f'has application-status "{args.status}"'
+                )
 
-                if args.priority:
-                    query += f'\n                    $p has priority-level "{args.priority}";'
+            if args.priority:
+                match_clause += f'\n                    $p has priority-level "{args.priority}";'
 
-                query += """
-                fetch $p: id, name, short-name, job-url, location, remote-policy, salary-range, priority-level;
-                    $n: application-status;"""
+            query = match_clause + """
+                fetch {
+                    "id": $p.id,
+                    "name": $p.name,
+                    "short-name": $p.short-name,
+                    "job-url": $p.job-url,
+                    "location": $p.location,
+                    "remote-policy": $p.remote-policy,
+                    "salary-range": $p.salary-range,
+                    "priority-level": $p.priority-level,
+                    "status": $n.application-status
+                };"""
 
-                results = list(tx.query.fetch(query))
+            results = list(tx.query(query).resolve())
 
-                # Separately fetch company info for each position
-                # Note: TypeDB fetch returns arrays for attributes
-                for r in results:
-                    id_list = r["p"].get("id", [])
-                    pos_id = id_list[0]["value"] if id_list else None
-                    if pos_id:
-                        company_query = f'''match
-                            $p isa jobhunt-position, has id "{pos_id}";
-                            (position: $p, employer: $c) isa position-at-company;
-                        fetch $c: name;'''
-                        try:
-                            company_results = list(tx.query.fetch(company_query))
-                            if company_results:
-                                name_list = company_results[0]["c"].get("name", [])
-                                r["company_name"] = name_list[0]["value"] if name_list else ""
-                        except Exception:
-                            r["company_name"] = ""
+            # Separately fetch company info for each position
+            for r in results:
+                pos_id = r.get("id")
+                if pos_id:
+                    company_query = f'''match
+                        $p isa jobhunt-position, has id "{pos_id}";
+                        (position: $p, employer: $c) isa position-at-company;
+                    fetch {{ "name": $c.name }};'''
+                    try:
+                        company_results = list(tx.query(company_query).resolve())
+                        if company_results:
+                            r["company_name"] = company_results[0].get("name", "")
+                    except Exception:
+                        r["company_name"] = ""
 
-                # If filtering by tag, we need a separate query
-                if args.tag:
-                    tag_query = f'''match
-                        $p isa jobhunt-position;
-                        $t isa tag, has name "{args.tag}";
-                        (tagged-entity: $p, tag: $t) isa tagging;
-                    fetch $p: id;'''
-                    tagged = list(tx.query.fetch(tag_query))
-                    tagged_ids = {get_attr(r["p"], "id") for r in tagged}
-                    results = [r for r in results if get_attr(r["p"], "id") in tagged_ids]
+            # If filtering by tag, we need a separate query
+            if args.tag:
+                tag_query = f'''match
+                    $p isa jobhunt-position;
+                    $t isa tag, has name "{args.tag}";
+                    (tagged-entity: $p, tag: $t) isa tagging;
+                fetch {{ "id": $p.id }};'''
+                tagged = list(tx.query(tag_query).resolve())
+                tagged_ids = {r.get("id") for r in tagged}
+                results = [r for r in results if r.get("id") in tagged_ids]
 
     # Format output
     positions = []
     for r in results:
         pos = {
-            "id": get_attr(r["p"], "id"),
-            "title": get_attr(r["p"], "name"),
-            "short_name": get_attr(r["p"], "short-name"),
-            "url": get_attr(r["p"], "job-url"),
-            "location": get_attr(r["p"], "location"),
-            "remote_policy": get_attr(r["p"], "remote-policy"),
-            "salary": get_attr(r["p"], "salary-range"),
-            "priority": get_attr(r["p"], "priority-level"),
-            "status": get_attr(r["n"], "application-status"),
+            "id": r.get("id"),
+            "title": r.get("name"),
+            "short_name": r.get("short-name"),
+            "url": r.get("job-url"),
+            "location": r.get("location"),
+            "remote_policy": r.get("remote-policy"),
+            "salary": r.get("salary-range"),
+            "priority": r.get("priority-level"),
+            "status": r.get("status"),
             "company": r.get("company_name", ""),
         }
         positions.append(pos)
 
     print(json.dumps({"success": True, "positions": positions, "count": len(positions)}, indent=2))
-
-
 def cmd_show_position(args):
     """Get full details for a position."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get position details
-                pos_query = f'''match
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get position details
+            pos_query = f'''match
+                $p isa jobhunt-position, has id "{args.id}";
+            fetch {{
+                "id": $p.id,
+                "name": $p.name,
+                "job-url": $p.job-url,
+                "location": $p.location,
+                "remote-policy": $p.remote-policy,
+                "salary-range": $p.salary-range,
+                "team-size": $p.team-size,
+                "priority-level": $p.priority-level,
+                "deadline": $p.deadline
+            }};'''
+            pos_result = list(tx.query(pos_query).resolve())
+
+            if not pos_result:
+                print(json.dumps({"success": False, "error": "Position not found"}))
+                return
+
+            # Get company
+            company_query = f'''match
+                $p isa jobhunt-position, has id "{args.id}";
+                (position: $p, employer: $c) isa position-at-company;
+            fetch {{
+                "id": $c.id,
+                "name": $c.name,
+                "company-url": $c.company-url,
+                "location": $c.location
+            }};'''
+            company_result = list(tx.query(company_query).resolve())
+
+            # Query each note subtype separately so we can return type
+            # labels and type-specific attributes for the dashboard
+            NOTE_TYPE_ATTRS = {
+                "jobhunt-application-note": ["id", "name", "content", "application-status", "applied-date", "response-date"],
+                "jobhunt-fit-analysis-note": ["id", "name", "content", "fit-score", "fit-summary"],
+                "jobhunt-interview-note": ["id", "name", "content", "interview-date"],
+                "jobhunt-interaction-note": ["id", "name", "content", "interaction-type", "interaction-date"],
+                "jobhunt-research-note": ["id", "name", "content"],
+                "jobhunt-strategy-note": ["id", "name", "content"],
+                "jobhunt-skill-gap-note": ["id", "name", "content"],
+            }
+            notes_result = []
+            for ntype, attr_list in NOTE_TYPE_ATTRS.items():
+                attr_fetch = ", ".join(f'"{a}": $n.{a}' for a in attr_list)
+                q = f'''match
                     $p isa jobhunt-position, has id "{args.id}";
-                fetch $p: id, name, job-url, location, remote-policy, salary-range,
-                    team-size, priority-level, deadline;'''
-                pos_result = list(tx.query.fetch(pos_query))
+                    (note: $n, subject: $p) isa aboutness;
+                    $n isa {ntype};
+                fetch {{ {attr_fetch} }};'''
+                for r in tx.query(q).resolve():
+                    r["type"] = ntype
+                    notes_result.append(r)
 
-                if not pos_result:
-                    print(json.dumps({"success": False, "error": "Position not found"}))
-                    return
+            # Get requirements
+            req_query = f'''match
+                $p isa jobhunt-position, has id "{args.id}";
+                (requirement: $r, position: $p) isa requirement-for;
+            fetch {{
+                "id": $r.id,
+                "skill-name": $r.skill-name,
+                "skill-level": $r.skill-level,
+                "your-level": $r.your-level,
+                "content": $r.content
+            }};'''
+            req_result = list(tx.query(req_query).resolve())
 
-                # Get company
-                company_query = f'''match
-                    $p isa jobhunt-position, has id "{args.id}";
-                    (position: $p, employer: $c) isa position-at-company;
-                fetch $c: id, name, company-url, location;'''
-                company_result = list(tx.query.fetch(company_query))
+            # Get job description artifact
+            artifact_query = f'''match
+                $p isa jobhunt-position, has id "{args.id}";
+                (artifact: $a, referent: $p) isa representation;
+                $a isa jobhunt-job-description;
+            fetch {{ "id": $a.id, "content": $a.content }};'''
+            artifact_result = list(tx.query(artifact_query).resolve())
 
-                # Query each note subtype separately so we can return type
-                # labels and type-specific attributes for the dashboard
-                NOTE_TYPES = {
-                    "jobhunt-application-note": "id, name, content, application-status, applied-date, response-date",
-                    "jobhunt-fit-analysis-note": "id, name, content, fit-score, fit-summary",
-                    "jobhunt-interview-note": "id, name, content, interview-date",
-                    "jobhunt-interaction-note": "id, name, content, interaction-type, interaction-date",
-                    "jobhunt-research-note": "id, name, content",
-                    "jobhunt-strategy-note": "id, name, content",
-                    "jobhunt-skill-gap-note": "id, name, content",
-                }
-                notes_result = []
-                for ntype, attrs in NOTE_TYPES.items():
-                    q = f'''match
-                        $p isa jobhunt-position, has id "{args.id}";
-                        (note: $n, subject: $p) isa aboutness;
-                        $n isa {ntype};
-                    fetch $n: {attrs};'''
-                    for r in tx.query.fetch(q):
-                        note = r["n"]
-                        note["type"] = {"label": ntype}
-                        notes_result.append(note)
-
-                # Get requirements
-                req_query = f'''match
-                    $p isa jobhunt-position, has id "{args.id}";
-                    (requirement: $r, position: $p) isa requirement-for;
-                fetch $r: id, skill-name, skill-level, your-level, content;'''
-                req_result = list(tx.query.fetch(req_query))
-
-                # Get job description artifact
-                artifact_query = f'''match
-                    $p isa jobhunt-position, has id "{args.id}";
-                    (artifact: $a, referent: $p) isa representation;
-                    $a isa jobhunt-job-description;
-                fetch $a: id, content;'''
-                artifact_result = list(tx.query.fetch(artifact_query))
-
-                # Get tags
-                tags_query = f'''match
-                    $p isa jobhunt-position, has id "{args.id}";
-                    (tagged-entity: $p, tag: $t) isa tagging;
-                fetch $t: name;'''
-                tags_result = list(tx.query.fetch(tags_query))
+            # Get tags
+            tags_query = f'''match
+                $p isa jobhunt-position, has id "{args.id}";
+                (tagged-entity: $p, tag: $t) isa tagging;
+            fetch {{ "name": $t.name }};'''
+            tags_result = list(tx.query(tags_query).resolve())
 
     output = {
         "success": True,
-        "position": pos_result[0]["p"] if pos_result else None,
-        "company": company_result[0]["c"] if company_result else None,
+        "position": pos_result[0] if pos_result else None,
+        "company": company_result[0] if company_result else None,
         "notes": notes_result,
-        "requirements": [r["r"] for r in req_result],
-        "job_description": artifact_result[0]["a"] if artifact_result else None,
-        "tags": [t["t"]["name"][0]["value"] for t in tags_result],
+        "requirements": req_result,
+        "job_description": artifact_result[0] if artifact_result else None,
+        "tags": [t.get("name") for t in tags_result],
     }
 
     print(json.dumps(output, indent=2, default=str))
@@ -1002,37 +1008,52 @@ def cmd_show_position(args):
 def cmd_show_company(args):
     """Get company details and positions."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get company
-                company_query = f'''match
-                    $c isa jobhunt-company, has id "{args.id}";
-                fetch $c: id, name, company-url, linkedin-url, description, location;'''
-                company_result = list(tx.query.fetch(company_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get company
+            company_query = f'''match
+                $c isa jobhunt-company, has id "{args.id}";
+            fetch {{
+                "id": $c.id,
+                "name": $c.name,
+                "company-url": $c.company-url,
+                "linkedin-url": $c.linkedin-url,
+                "description": $c.description,
+                "location": $c.location
+            }};'''
+            company_result = list(tx.query(company_query).resolve())
 
-                if not company_result:
-                    print(json.dumps({"success": False, "error": "Company not found"}))
-                    return
+            if not company_result:
+                print(json.dumps({"success": False, "error": "Company not found"}))
+                return
 
-                # Get positions at company
-                pos_query = f'''match
-                    $c isa jobhunt-company, has id "{args.id}";
-                    (position: $p, employer: $c) isa position-at-company;
-                fetch $p: id, name, job-url, priority-level;'''
-                pos_result = list(tx.query.fetch(pos_query))
+            # Get positions at company
+            pos_query = f'''match
+                $c isa jobhunt-company, has id "{args.id}";
+                (position: $p, employer: $c) isa position-at-company;
+            fetch {{
+                "id": $p.id,
+                "name": $p.name,
+                "job-url": $p.job-url,
+                "priority-level": $p.priority-level
+            }};'''
+            pos_result = list(tx.query(pos_query).resolve())
 
-                # Get notes about company
-                notes_query = f'''match
-                    $c isa jobhunt-company, has id "{args.id}";
-                    (note: $n, subject: $c) isa aboutness;
-                fetch $n: id, name, content;'''
-                notes_result = list(tx.query.fetch(notes_query))
+            # Get notes about company
+            notes_query = f'''match
+                $c isa jobhunt-company, has id "{args.id}";
+                (note: $n, subject: $c) isa aboutness;
+            fetch {{
+                "id": $n.id,
+                "name": $n.name,
+                "content": $n.content
+            }};'''
+            notes_result = list(tx.query(notes_query).resolve())
 
     output = {
         "success": True,
-        "company": company_result[0]["c"] if company_result else None,
-        "positions": [p["p"] for p in pos_result],
-        "notes": [n["n"] for n in notes_result],
+        "company": company_result[0] if company_result else None,
+        "positions": pos_result,
+        "notes": notes_result,
     }
 
     print(json.dumps(output, indent=2, default=str))
@@ -1041,52 +1062,67 @@ def cmd_show_company(args):
 def cmd_show_gaps(args):
     """Show skill gaps across active applications."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get all requirements with their positions
-                query = """match
-                    $r isa jobhunt-requirement, has skill-name $skill;
-                    (requirement: $r, position: $p) isa requirement-for;
-                    (note: $n, subject: $p) isa aboutness;
-                    $n isa jobhunt-application-note, has application-status $status;
-                    not { $status = "rejected"; };
-                    not { $status = "withdrawn"; };
-                fetch $r: skill-name, skill-level, your-level;
-                    $p: id, name;"""
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get all requirements with their positions
+            query = """match
+                $r isa jobhunt-requirement;
+                (requirement: $r, position: $p) isa requirement-for;
+                (note: $n, subject: $p) isa aboutness;
+                $n isa jobhunt-application-note, has application-status $status;
+                not { $status = "rejected"; };
+                not { $status = "withdrawn"; };
+            fetch {
+                "skill-name": $r.skill-name,
+                "skill-level": $r.skill-level,
+                "your-level": $r.your-level,
+                "pos-id": $p.id,
+                "pos-name": $p.name
+            };"""
+            results = list(tx.query(query).resolve())
 
-                results = list(tx.query.fetch(query))
+            # Get learning resources
+            resources_query = """match
+                $res isa jobhunt-learning-resource;
+            fetch {
+                "id": $res.id,
+                "name": $res.name,
+                "resource-type": $res.resource-type,
+                "resource-url": $res.resource-url,
+                "estimated-hours": $res.estimated-hours,
+                "completion-status": $res.completion-status
+            };"""
+            resources = list(tx.query(resources_query).resolve())
 
-                # Get learning resources
-                resources_query = """match
-                    $res isa jobhunt-learning-resource;
-                fetch $res: id, name, resource-type, resource-url, estimated-hours, completion-status;"""
-                resources = list(tx.query.fetch(resources_query))
-
-                # Get collections linked to requirements via addresses-requirement
-                coll_query = """match
-                    $c isa collection;
-                    (resource: $c, requirement: $req) isa addresses-requirement;
-                fetch $c: id, name, description;
-                    $req: id, skill-name;"""
-                coll_results = list(tx.query.fetch(coll_query))
+            # Get collections linked to requirements via addresses-requirement
+            coll_query = """match
+                $c isa collection;
+                (resource: $c, requirement: $req) isa addresses-requirement;
+            fetch {
+                "id": $c.id,
+                "name": $c.name,
+                "description": $c.description,
+                "req-id": $req.id,
+                "skill-name": $req.skill-name
+            };"""
+            coll_results = list(tx.query(coll_query).resolve())
 
     # Aggregate skills
     skill_map = {}
     for r in results:
-        skill = get_attr(r["r"], "skill-name")
+        skill = r.get("skill-name", "")
         if not skill:
             continue
 
         if skill not in skill_map:
             skill_map[skill] = {
                 "skill": skill,
-                "level": get_attr(r["r"], "skill-level"),
-                "your_level": get_attr(r["r"], "your-level"),
+                "level": r.get("skill-level", ""),
+                "your_level": r.get("your-level", ""),
                 "positions": [],
             }
 
         skill_map[skill]["positions"].append(
-            {"id": get_attr(r["p"], "id"), "title": get_attr(r["p"], "name")}
+            {"id": r.get("pos-id", ""), "title": r.get("pos-name", "")}
         )
 
     # Filter to gaps (where your_level is not 'strong')
@@ -1099,11 +1135,11 @@ def cmd_show_gaps(args):
     collections = []
     for cr in coll_results:
         collections.append({
-            "id": get_attr(cr["c"], "id"),
-            "name": get_attr(cr["c"], "name"),
-            "description": get_attr(cr["c"], "description"),
-            "requirement_id": get_attr(cr["req"], "id"),
-            "skill_name": get_attr(cr["req"], "skill-name"),
+            "id": cr.get("id", ""),
+            "name": cr.get("name", ""),
+            "description": cr.get("description", ""),
+            "requirement_id": cr.get("req-id", ""),
+            "skill_name": cr.get("skill-name", ""),
         })
 
     print(
@@ -1112,7 +1148,7 @@ def cmd_show_gaps(args):
                 "success": True,
                 "skill_gaps": gaps,
                 "total_gaps": len(gaps),
-                "resources": [r["res"] for r in resources],
+                "resources": resources,
                 "collections": collections,
             },
             indent=2,
@@ -1124,43 +1160,54 @@ def cmd_show_gaps(args):
 def cmd_learning_plan(args):
     """Generate a prioritized learning plan based on skill gaps."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get all learning resources
-                # Note: TypeDB 2.x doesn't support 'optional' - use separate queries if needed
-                query = """match
-                    $res isa jobhunt-learning-resource;
-                fetch $res: id, name, resource-type, resource-url, estimated-hours, completion-status;"""
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get all learning resources
+            query = """match
+                $res isa jobhunt-learning-resource;
+            fetch {
+                "id": $res.id,
+                "name": $res.name,
+                "resource-type": $res.resource-type,
+                "resource-url": $res.resource-url,
+                "estimated-hours": $res.estimated-hours,
+                "completion-status": $res.completion-status
+            };"""
+            results = list(tx.query(query).resolve())
 
-                results = list(tx.query.fetch(query))
+            # Get collections linked to skill requirements
+            coll_query = """match
+                $c isa collection;
+                (resource: $c, requirement: $req) isa addresses-requirement;
+            fetch {
+                "id": $c.id,
+                "name": $c.name,
+                "description": $c.description,
+                "skill-name": $req.skill-name
+            };"""
+            coll_results = list(tx.query(coll_query).resolve())
 
-                # Get collections linked to skill requirements
-                coll_query = """match
-                    $c isa collection;
-                    (resource: $c, requirement: $req) isa addresses-requirement;
-                    $req has skill-name $skill;
-                fetch $c: id, name, description;
-                    $req: skill-name;"""
-                coll_results = list(tx.query.fetch(coll_query))
-
-                # Get papers referenced by learning resources via citation-reference
-                paper_query = """match
-                    $res isa jobhunt-learning-resource;
-                    (citing-item: $res, cited-item: $paper) isa citation-reference;
-                fetch $res: id, name;
-                    $paper: id, name;"""
-                paper_results = list(tx.query.fetch(paper_query))
+            # Get papers referenced by learning resources via citation-reference
+            paper_query = """match
+                $res isa jobhunt-learning-resource;
+                (citing-item: $res, cited-item: $paper) isa citation-reference;
+            fetch {
+                "res-id": $res.id,
+                "res-name": $res.name,
+                "paper-id": $paper.id,
+                "paper-name": $paper.name
+            };"""
+            paper_results = list(tx.query(paper_query).resolve())
 
     # Format resources
     resources = []
     for r in results:
         res = {
-            "id": get_attr(r["res"], "id"),
-            "name": get_attr(r["res"], "name"),
-            "type": get_attr(r["res"], "resource-type"),
-            "url": get_attr(r["res"], "resource-url"),
-            "hours": get_attr(r["res"], "estimated-hours"),
-            "status": get_attr(r["res"], "completion-status"),
+            "id": r.get("id", ""),
+            "name": r.get("name", ""),
+            "type": r.get("resource-type", ""),
+            "url": r.get("resource-url", ""),
+            "hours": r.get("estimated-hours", ""),
+            "status": r.get("completion-status", ""),
         }
         resources.append(res)
 
@@ -1176,15 +1223,15 @@ def cmd_learning_plan(args):
     collections = []
     seen_colls = set()
     for cr in coll_results:
-        coll_id = get_attr(cr["c"], "id")
-        skill = get_attr(cr["req"], "skill-name")
+        coll_id = cr.get("id", "")
+        skill = cr.get("skill-name", "")
         key = f"{coll_id}:{skill}"
         if key not in seen_colls:
             seen_colls.add(key)
             collections.append({
                 "id": coll_id,
-                "name": get_attr(cr["c"], "name"),
-                "description": get_attr(cr["c"], "description"),
+                "name": cr.get("name", ""),
+                "description": cr.get("description", ""),
                 "skill_name": skill,
             })
 
@@ -1192,10 +1239,10 @@ def cmd_learning_plan(args):
     referenced_papers = []
     for pr in paper_results:
         referenced_papers.append({
-            "resource_id": get_attr(pr["res"], "id"),
-            "resource_name": get_attr(pr["res"], "name"),
-            "paper_id": get_attr(pr["paper"], "id"),
-            "paper_name": get_attr(pr["paper"], "name"),
+            "resource_id": pr.get("res-id", ""),
+            "resource_name": pr.get("res-name", ""),
+            "paper_id": pr.get("paper-id", ""),
+            "paper_name": pr.get("paper-name", ""),
         })
 
     print(
@@ -1214,26 +1261,25 @@ def cmd_learning_plan(args):
 
 def cmd_tag(args):
     """Tag an entity."""
+    tag_id = generate_id("tag")
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Create tag if not exists
-            tag_id = generate_id("tag")
-            with session.transaction(TransactionType.READ) as tx:
-                tag_check = f'match $t isa tag, has name "{args.tag}"; fetch $t: id;'
-                existing_tag = list(tx.query.fetch(tag_check))
+        # Create tag if not exists
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            tag_check = f'match $t isa tag, has name "{args.tag}"; fetch {{ "id": $t.id }};'
+            existing_tag = list(tx.query(tag_check).resolve())
 
-            if not existing_tag:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.insert(f'insert $t isa tag, has id "{tag_id}", has name "{args.tag}";')
-                    tx.commit()
-
-            # Create tagging relation
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(f'''match
-                    $e isa entity, has id "{args.entity}";
-                    $t isa tag, has name "{args.tag}";
-                insert (tagged-entity: $e, tag: $t) isa tagging;''')
+        if not existing_tag:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'insert $t isa tag, has id "{tag_id}", has name "{args.tag}";').resolve()
                 tx.commit()
+
+        # Create tagging relation
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $e isa entity, has id "{args.entity}";
+                $t isa tag, has name "{args.tag}";
+            insert (tagged-entity: $e, tag: $t) isa tagging;''').resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "entity": args.entity, "tag": args.tag}))
 
@@ -1241,20 +1287,22 @@ def cmd_tag(args):
 def cmd_search_tag(args):
     """Search entities by tag."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = f'''match
-                    $t isa tag, has name "{args.tag}";
-                    (tagged-entity: $e, tag: $t) isa tagging;
-                fetch $e: id, name;'''
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = f'''match
+                $t isa tag, has name "{args.tag}";
+                (tagged-entity: $e, tag: $t) isa tagging;
+            fetch {{
+                "id": $e.id,
+                "name": $e.name
+            }};'''
+            results = list(tx.query(query).resolve())
 
     print(
         json.dumps(
             {
                 "success": True,
                 "tag": args.tag,
-                "entities": [r["e"] for r in results],
+                "entities": results,
                 "count": len(results),
             },
             indent=2,
@@ -1283,19 +1331,18 @@ def cmd_add_requirement(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Link to position
-            with session.transaction(TransactionType.WRITE) as tx:
-                rel_query = f'''match
-                    $r isa jobhunt-requirement, has id "{req_id}";
-                    $p isa jobhunt-position, has id "{args.position}";
-                insert (requirement: $r, position: $p) isa requirement-for;'''
-                tx.query.insert(rel_query)
-                tx.commit()
+        # Link to position
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            rel_query = f'''match
+                $r isa jobhunt-requirement, has id "{req_id}";
+                $p isa jobhunt-position, has id "{args.position}";
+            insert (requirement: $r, position: $p) isa requirement-for;'''
+            tx.query(rel_query).resolve()
+            tx.commit()
 
     print(
         json.dumps(
@@ -1322,39 +1369,43 @@ def cmd_add_skill(args):
     position requirements against your capabilities for gap analysis.
     """
     timestamp = get_timestamp()
+    existing = []
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Check if skill already exists
-            with session.transaction(TransactionType.READ) as tx:
-                check_query = f'''match
+        # Check if skill already exists
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            check_query = f'''match
+                $s isa your-skill, has skill-name "{escape_string(args.name)}";
+            fetch {{
+                "skill-name": $s.skill-name,
+                "skill-level": $s.skill-level
+            }};'''
+            existing = list(tx.query(check_query).resolve())
+
+        if existing:
+            # Update existing skill - delete and recreate
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'''match
                     $s isa your-skill, has skill-name "{escape_string(args.name)}";
-                fetch $s: skill-name, skill-level;'''
-                existing = list(tx.query.fetch(check_query))
-
-            if existing:
-                # Update existing skill - delete and recreate
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.delete(f'''match
-                        $s isa your-skill, has skill-name "{escape_string(args.name)}";
-                    delete $s isa your-skill;''')
-                    tx.commit()
-
-            # Create skill
-            with session.transaction(TransactionType.WRITE) as tx:
-                skill_id = generate_id("skill")
-                skill_query = f'''insert $s isa your-skill,
-                    has id "{skill_id}",
-                    has skill-name "{escape_string(args.name)}",
-                    has skill-level "{args.level}",
-                    has last-updated {timestamp}'''
-
-                if args.description:
-                    skill_query += f', has description "{escape_string(args.description)}"'
-
-                skill_query += ";"
-                tx.query.insert(skill_query)
+                delete $s isa your-skill;''').resolve()
                 tx.commit()
+
+        # Create skill
+        skill_id = generate_id("skill")
+        skill_query = f'''insert $s isa your-skill,
+            has id "{skill_id}",
+            has skill-name "{escape_string(args.name)}",
+            has skill-level "{args.level}",
+            has last-updated {timestamp}'''
+
+        if args.description:
+            skill_query += f', has description "{escape_string(args.description)}"'
+
+        skill_query += ";"
+
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(skill_query).resolve()
+            tx.commit()
 
     action = "updated" if existing else "added"
     print(
@@ -1373,21 +1424,25 @@ def cmd_add_skill(args):
 def cmd_list_skills(args):
     """List your skill profile."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match
-                    $s isa your-skill;
-                fetch $s: skill-name, skill-level, description, last-updated;"""
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match
+                $s isa your-skill;
+            fetch {
+                "skill-name": $s.skill-name,
+                "skill-level": $s.skill-level,
+                "description": $s.description,
+                "last-updated": $s.last-updated
+            };"""
+            results = list(tx.query(query).resolve())
 
     # Format output
     skills = []
     for r in results:
         skill = {
-            "name": get_attr(r["s"], "skill-name"),
-            "level": get_attr(r["s"], "skill-level"),
-            "description": get_attr(r["s"], "description"),
-            "last_updated": get_attr(r["s"], "last-updated"),
+            "name": r.get("skill-name", ""),
+            "level": r.get("skill-level", ""),
+            "description": r.get("description", ""),
+            "last_updated": r.get("last-updated", ""),
         }
         skills.append(skill)
 
@@ -1428,51 +1483,56 @@ def cmd_list_artifacts(args):
     - 'all': All artifacts
     """
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get all job description artifacts
-                artifacts_query = """match
-                    $a isa jobhunt-job-description;
-                fetch $a: id, name, source-uri, created-at;"""
-                artifacts = list(tx.query.fetch(artifacts_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get all job description artifacts
+            artifacts_query = """match
+                $a isa jobhunt-job-description;
+            fetch {
+                "id": $a.id,
+                "name": $a.name,
+                "source-uri": $a.source-uri,
+                "created-at": $a.created-at
+            };"""
+            artifacts = list(tx.query(artifacts_query).resolve())
 
-                # For each artifact, check if it has associated notes
-                # (via position -> aboutness -> note)
-                results = []
-                for art in artifacts:
-                    artifact_id = get_attr(art["a"], "id")
+            # For each artifact, check if it has associated notes
+            # (via position -> aboutness -> note)
+            results = []
+            for art in artifacts:
+                artifact_id = art.get("id", "")
 
-                    # Check for notes on the linked position
-                    notes_query = f'''match
-                        $a isa jobhunt-job-description, has id "{artifact_id}";
-                        (artifact: $a, referent: $p) isa representation;
-                        (note: $n, subject: $p) isa aboutness;
-                        not {{ $n isa jobhunt-application-note; }};
-                    fetch $n: id;'''
+                # Check for notes on the linked position
+                notes_query = f'''match
+                    $a isa jobhunt-job-description, has id "{artifact_id}";
+                    (artifact: $a, referent: $p) isa representation;
+                    (note: $n, subject: $p) isa aboutness;
+                    not {{ $n isa jobhunt-application-note; }};
+                fetch {{ "id": $n.id }};'''
 
-                    try:
-                        notes = list(tx.query.fetch(notes_query))
-                        has_notes = len(notes) > 0
-                    except Exception:
-                        has_notes = False
+                try:
+                    notes = list(tx.query(notes_query).resolve())
+                    has_notes = len(notes) > 0
+                except Exception:
+                    has_notes = False
+                    notes = []
 
-                    status = "analyzed" if has_notes else "raw"
+                status = "analyzed" if has_notes else "raw"
 
-                    # Apply filter
-                    if args.status and args.status != "all":
-                        if args.status != status:
-                            continue
+                # Apply filter
+                if args.status and args.status != "all":
+                    if args.status != status:
+                        continue
 
-                    results.append(
-                        {
-                            "id": artifact_id,
-                            "name": get_attr(art["a"], "name"),
-                            "source_url": get_attr(art["a"], "source-uri"),
-                            "created_at": get_attr(art["a"], "created-at"),
-                            "status": status,
-                            "note_count": len(notes) if has_notes else 0,
-                        }
-                    )
+                results.append(
+                    {
+                        "id": artifact_id,
+                        "name": art.get("name", ""),
+                        "source_url": art.get("source-uri", ""),
+                        "created_at": art.get("created-at", ""),
+                        "status": status,
+                        "note_count": len(notes) if has_notes else 0,
+                    }
+                )
 
     print(
         json.dumps(
@@ -1496,43 +1556,62 @@ def cmd_show_artifact(args):
     if the artifact was stored externally.
     """
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get artifact - include cache-path and other cache attributes
-                artifact_query = f'''match
-                    $a isa jobhunt-job-description, has id "{args.id}";
-                fetch $a: id, name, content, cache-path, mime-type, file-size, source-uri, created-at;'''
-                artifact_result = list(tx.query.fetch(artifact_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get artifact - include cache-path and other cache attributes
+            artifact_query = f'''match
+                $a isa jobhunt-job-description, has id "{args.id}";
+            fetch {{
+                "id": $a.id,
+                "name": $a.name,
+                "content": $a.content,
+                "cache-path": $a.cache-path,
+                "mime-type": $a.mime-type,
+                "file-size": $a.file-size,
+                "source-uri": $a.source-uri,
+                "created-at": $a.created-at
+            }};'''
+            artifact_result = list(tx.query(artifact_query).resolve())
 
-                if not artifact_result:
-                    print(json.dumps({"success": False, "error": "Artifact not found"}))
-                    return
+            if not artifact_result:
+                print(json.dumps({"success": False, "error": "Artifact not found"}))
+                return
 
-                # Get linked position (specifically jobhunt-position)
-                position_query = f'''match
-                    $a isa jobhunt-job-description, has id "{args.id}";
-                    (artifact: $a, referent: $p) isa representation;
-                    $p isa jobhunt-position;
-                fetch $p: id, name, job-url, location, remote-policy, salary-range, priority-level;'''
-                position_result = list(tx.query.fetch(position_query))
+            # Get linked position (specifically jobhunt-position)
+            position_query = f'''match
+                $a isa jobhunt-job-description, has id "{args.id}";
+                (artifact: $a, referent: $p) isa representation;
+                $p isa jobhunt-position;
+            fetch {{
+                "id": $p.id,
+                "name": $p.name,
+                "job-url": $p.job-url,
+                "location": $p.location,
+                "remote-policy": $p.remote-policy,
+                "salary-range": $p.salary-range,
+                "priority-level": $p.priority-level
+            }};'''
+            position_result = list(tx.query(position_query).resolve())
 
-                # Get linked company (if any)
-                company_result = []
-                if position_result:
-                    pos_id = get_attr(position_result[0]["p"], "id")
-                    company_query = f'''match
-                        $p isa jobhunt-position, has id "{pos_id}";
-                        (position: $p, employer: $c) isa position-at-company;
-                    fetch $c: id, name;'''
-                    try:
-                        company_result = list(tx.query.fetch(company_query))
-                    except Exception:
-                        pass
+            # Get linked company (if any)
+            company_result = []
+            if position_result:
+                pos_id = position_result[0].get("id", "")
+                company_query = f'''match
+                    $p isa jobhunt-position, has id "{pos_id}";
+                    (position: $p, employer: $c) isa position-at-company;
+                fetch {{
+                    "id": $c.id,
+                    "name": $c.name
+                }};'''
+                try:
+                    company_result = list(tx.query(company_query).resolve())
+                except Exception:
+                    pass
 
-    art = artifact_result[0]["a"]
+    art = artifact_result[0]
 
     # Get content - either from inline content or from cache
-    cache_path = get_attr(art, "cache-path")
+    cache_path = art.get("cache-path", "")
     if cache_path and CACHE_AVAILABLE:
         # Load from cache
         try:
@@ -1543,42 +1622,42 @@ def cmd_show_artifact(args):
             storage = "cache_missing"
     else:
         # Get inline content
-        content = get_attr(art, "content")
+        content = art.get("content", "")
         storage = "inline"
 
     output = {
         "success": True,
         "artifact": {
-            "id": get_attr(art, "id"),
-            "name": get_attr(art, "name"),
-            "source_url": get_attr(art, "source-uri"),
-            "created_at": get_attr(art, "created-at"),
+            "id": art.get("id", ""),
+            "name": art.get("name", ""),
+            "source_url": art.get("source-uri", ""),
+            "created_at": art.get("created-at", ""),
             "content": content,
             "storage": storage,
             "cache_path": cache_path,
-            "mime_type": get_attr(art, "mime-type"),
-            "file_size": get_attr(art, "file-size"),
+            "mime_type": art.get("mime-type", ""),
+            "file_size": art.get("file-size", ""),
         },
         "position": None,
         "company": None,
     }
 
     if position_result:
-        pos = position_result[0]["p"]
+        pos = position_result[0]
         output["position"] = {
-            "id": get_attr(pos, "id"),
-            "name": get_attr(pos, "name"),
-            "url": get_attr(pos, "job-url"),
-            "location": get_attr(pos, "location"),
-            "remote_policy": get_attr(pos, "remote-policy"),
-            "salary": get_attr(pos, "salary-range"),
-            "priority": get_attr(pos, "priority-level"),
+            "id": pos.get("id", ""),
+            "name": pos.get("name", ""),
+            "url": pos.get("job-url", ""),
+            "location": pos.get("location", ""),
+            "remote_policy": pos.get("remote-policy", ""),
+            "salary": pos.get("salary-range", ""),
+            "priority": pos.get("priority-level", ""),
         }
 
     if company_result:
-        comp = company_result[0]["c"]
+        comp = company_result[0]
         output["company"] = {
-            "id": get_attr(comp, "id"),
+            "id": comp.get("id", ""),
             "name": get_attr(comp, "name"),
         }
 
@@ -1637,63 +1716,64 @@ PRIORITY_EMOJI = {
 
 def _fetch_pipeline_data():
     """Fetch all pipeline data: positions with status from application notes."""
-    client = TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
-    session = client.session(TYPEDB_DATABASE, SessionType.DATA)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get positions with status from application notes
+            query = """
+                match
+                $p isa jobhunt-position;
+                (note: $n, subject: $p) isa aboutness;
+                $n isa jobhunt-application-note, has application-status $status;
+                fetch {
+                    "id": $p.id,
+                    "name": $p.name,
+                    "short-name": $p.short-name,
+                    "job-url": $p.job-url,
+                    "priority-level": $p.priority-level,
+                    "status": $n.application-status
+                };
+            """
+            results = list(tx.query(query).resolve())
 
-    try:
-        tx = session.transaction(TransactionType.READ)
+            # Also get positions WITHOUT application notes (still researching)
+            all_pos_query = """
+                match $p isa jobhunt-position;
+                fetch {
+                    "id": $p.id,
+                    "name": $p.name,
+                    "short-name": $p.short-name,
+                    "job-url": $p.job-url,
+                    "priority-level": $p.priority-level
+                };
+            """
+            all_positions = list(tx.query(all_pos_query).resolve())
 
-        # Get positions with status from application notes
-        query = """
-            match
-            $p isa jobhunt-position;
-            (note: $n, subject: $p) isa aboutness;
-            $n isa jobhunt-application-note, has application-status $status;
-            fetch $p: id, name, short-name, job-url, priority-level;
-                $n: application-status;
-        """
-        results = list(tx.query.fetch(query))
-
-        # Also get positions WITHOUT application notes (still researching)
-        all_pos_query = """
-            match $p isa jobhunt-position;
-            fetch $p: id, name, short-name, job-url, priority-level;
-        """
-        all_positions = list(tx.query.fetch(all_pos_query))
-
-        tx.close()
-    finally:
-        session.close()
-        client.close()
-
-    # Extract positions with status
+    # Extract positions with status (3.x returns plain dicts)
     tracked = {}
     for r in results:
-        p = r["p"]
-        pid = p.get("id", [{}])[0].get("value", "") if p.get("id") else ""
+        pid = r.get("id", "")
         if not pid:
             continue
         tracked[pid] = {
             "id": pid,
-            "name": p.get("name", [{}])[0].get("value", "") if p.get("name") else "",
-            "short_name": p.get("short-name", [{}])[0].get("value", "") if p.get("short-name") else "",
-            "priority": p.get("priority-level", [{}])[0].get("value", "") if p.get("priority-level") else "",
-            "url": p.get("job-url", [{}])[0].get("value", "") if p.get("job-url") else "",
-            "status": r["n"].get("application-status", [{}])[0].get("value", "researching") if r.get("n") else "researching",
+            "name": r.get("name", ""),
+            "short_name": r.get("short-name", ""),
+            "priority": r.get("priority-level", ""),
+            "url": r.get("job-url", ""),
+            "status": r.get("status", "researching"),
         }
 
     # Add untracked positions as "researching"
     for r in all_positions:
-        p = r["p"]
-        pid = p.get("id", [{}])[0].get("value", "") if p.get("id") else ""
+        pid = r.get("id", "")
         if not pid or pid in tracked:
             continue
         tracked[pid] = {
             "id": pid,
-            "name": p.get("name", [{}])[0].get("value", "") if p.get("name") else "",
-            "short_name": p.get("short-name", [{}])[0].get("value", "") if p.get("short-name") else "",
-            "priority": p.get("priority-level", [{}])[0].get("value", "") if p.get("priority-level") else "",
-            "url": p.get("job-url", [{}])[0].get("value", "") if p.get("job-url") else "",
+            "name": r.get("name", ""),
+            "short_name": r.get("short-name", ""),
+            "priority": r.get("priority-level", ""),
+            "url": r.get("job-url", ""),
             "status": "researching",
         }
 
@@ -1740,76 +1820,58 @@ def cmd_report_pipeline(args):
 
 def cmd_report_position(args):
     """Generate position detail report as formatted Markdown."""
-    client = TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
-    session = client.session(TYPEDB_DATABASE, SessionType.DATA)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            pid = args.id
 
-    try:
-        tx = session.transaction(TransactionType.READ)
+            # Get position attributes
+            pos_query = f"""
+                match $p isa jobhunt-position, has id "{pid}";
+                fetch {{
+                    "id": $p.id,
+                    "name": $p.name,
+                    "short-name": $p.short-name,
+                    "job-url": $p.job-url,
+                    "salary-range": $p.salary-range,
+                    "location": $p.location,
+                    "remote-policy": $p.remote-policy,
+                    "priority-level": $p.priority-level
+                }};
+            """
+            pos_results = list(tx.query(pos_query).resolve())
+            if not pos_results:
+                print(f"Position `{pid}` not found.")
+                return
 
-        pid = args.id
+            attrs = pos_results[0]
 
-        # Get position attributes
-        query = f"""
-            match $p isa jobhunt-position, has id "{pid}", has $a;
-            get $a;
-        """
-        results = list(tx.query.get(query))
-        if not results:
-            print(f"Position `{pid}` not found.")
-            return
+            # Get notes content
+            note_query = f"""
+                match
+                $p isa jobhunt-position, has id "{pid}";
+                $note isa note;
+                (subject: $p, note: $note) isa aboutness;
+                fetch {{ "content": $note.content }};
+            """
+            try:
+                all_notes = list(tx.query(note_query).resolve())
+            except Exception:
+                all_notes = []
 
-        attrs = {}
-        for r in results:
-            a = r.get("a")
-            label = a.get_type().get_label().name
-            attrs[label] = a.get_value()
-
-        # Get notes
-        note_query = f"""
-            match
-            $p isa jobhunt-position, has id "{pid}";
-            $note isa note, has content $c;
-            (subject: $p, note: $note) isa aboutness;
-            $note has name $nname;
-            get $c, $nname;
-        """
-        try:
-            notes = list(tx.query.get(note_query))
-        except Exception:
-            notes = []
-
-        # Get notes without names
-        note_query2 = f"""
-            match
-            $p isa jobhunt-position, has id "{pid}";
-            $note isa note, has content $c;
-            (subject: $p, note: $note) isa aboutness;
-            get $c;
-        """
-        try:
-            all_notes = list(tx.query.get(note_query2))
-        except Exception:
-            all_notes = []
-
-        # Get application status from application note
-        status_query = f"""
-            match
-            $p isa jobhunt-position, has id "{pid}";
-            $n isa jobhunt-application-note, has application-status $s;
-            (subject: $p, note: $n) isa aboutness;
-            get $s;
-        """
-        try:
-            status_results = list(tx.query.get(status_query))
-            if status_results:
-                attrs["application-status"] = status_results[0].get("s").get_value()
-        except Exception:
-            pass
-
-        tx.close()
-    finally:
-        session.close()
-        client.close()
+            # Get application status from application note
+            status_query = f"""
+                match
+                $p isa jobhunt-position, has id "{pid}";
+                $n isa jobhunt-application-note;
+                (subject: $p, note: $n) isa aboutness;
+                fetch {{ "status": $n.application-status }};
+            """
+            try:
+                status_results = list(tx.query(status_query).resolve())
+                if status_results:
+                    attrs["application-status"] = status_results[0].get("status")
+            except Exception:
+                pass
 
     # Build markdown
     title = attrs.get("short-name") or attrs.get("name", pid)
@@ -1834,63 +1896,58 @@ def cmd_report_position(args):
         lines.append(f"**Notes** ({len(all_notes)})")
         lines.append("")
         for n in all_notes:
-            content = n.get("c").get_value()
-            # Unescape literal \n sequences
-            content = content.replace("\\n", "\n").replace("\\'", "'")
-            # Truncate long notes for messaging
-            if len(content) > 500:
-                content = content[:497] + "..."
-            lines.append(f"{content}")
-            lines.append("")
-            lines.append("---")
-            lines.append("")
+            note_content = n.get("content", "")
+            if note_content:
+                # Unescape literal \n sequences
+                note_content = note_content.replace("\\n", "\n").replace("\\'", "'")
+                # Truncate long notes for messaging
+                if len(note_content) > 500:
+                    note_content = note_content[:497] + "..."
+                lines.append(f"{note_content}")
+                lines.append("")
+                lines.append("---")
+                lines.append("")
 
     print("\n".join(lines))
 
-
 def cmd_report_gaps(args):
     """Generate skill gaps report as formatted Markdown."""
-    client = TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
-    session = client.session(TYPEDB_DATABASE, SessionType.DATA)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Get all requirements with your skill levels
+            query = """
+                match
+                $req isa jobhunt-requirement;
+                $p isa jobhunt-position;
+                (position: $p, requirement: $req) isa requirement-for;
+                fetch {
+                    "skill": $req.skill-name,
+                    "level": $req.skill-level,
+                    "pos_name": $p.name
+                };
+            """
+            results = list(tx.query(query).resolve())
 
-    try:
-        tx = session.transaction(TransactionType.READ)
-
-        # Get all requirements with your skill levels
-        query = """
-            match
-            $req isa jobhunt-requirement, has skill-name $skill, has skill-level $level;
-            $p isa jobhunt-position, has name $pname, has id $pid;
-            (position: $p, requirement: $req) isa requirement-for;
-            get $skill, $level, $pname, $pid;
-        """
-        results = list(tx.query.get(query))
-
-        # Get your skills
-        skill_query = """
-            match $s isa your-skill, has skill-name $name, has skill-level $level;
-            get $name, $level;
-        """
-        try:
-            skill_results = list(tx.query.get(skill_query))
-        except Exception:
-            skill_results = []
-
-        tx.close()
-    finally:
-        session.close()
-        client.close()
+            # Get your skills
+            skill_query = """
+                match $s isa your-skill;
+                fetch { "name": $s.skill-name, "level": $s.skill-level };
+            """
+            try:
+                skill_results = list(tx.query(skill_query).resolve())
+            except Exception:
+                skill_results = []
 
     my_skills = {}
     for s in skill_results:
-        my_skills[s.get("name").get_value()] = s.get("level").get_value()
+        my_skills[s.get("name", "")] = s.get("level", "")
 
     # Group by skill
     gaps = {}
     for r in results:
-        skill = r.get("skill").get_value()
-        level = r.get("level").get_value()
-        pos_name = r.get("pname").get_value()
+        skill = r.get("skill", "")
+        level = r.get("level", "")
+        pos_name = r.get("pos_name", "")
         my_level = my_skills.get(skill, "none")
 
         if my_level in ("strong",):
@@ -1904,10 +1961,10 @@ def cmd_report_gaps(args):
         gaps[skill]["positions"].append(pos_name[:30])
 
     # Build markdown
-    lines = ["**🎯 Skill Gaps Analysis**", ""]
+    lines = ["**Skill Gaps Analysis**", ""]
 
     if not gaps:
-        lines.append("No significant skill gaps found! ✅")
+        lines.append("No significant skill gaps found!")
     else:
         # Sort: required gaps first, then by number of positions
         sorted_gaps = sorted(
@@ -1915,19 +1972,18 @@ def cmd_report_gaps(args):
             key=lambda x: (0 if x[1]["required_level"] == "required" else 1, -len(x[1]["positions"]))
         )
 
-        LEVEL_EMOJI = {"none": "⬜", "some": "🟨", "learning": "🟧", "strong": "🟩"}
+        LEVEL_EMOJI = {"none": "[ ]", "some": "[~]", "learning": "[o]", "strong": "[x]"}
 
         for skill, info in sorted_gaps:
-            level_e = LEVEL_EMOJI.get(info["your_level"], "⬜")
-            req_marker = "❗" if info["required_level"] == "required" else "💡"
+            level_e = LEVEL_EMOJI.get(info["your_level"], "[ ]")
+            req_marker = "!" if info["required_level"] == "required" else "?"
             count = len(info["positions"])
-            lines.append(f"{req_marker} **{skill}** {level_e} ({info['your_level']}) → needed by {count} position(s)")
+            lines.append(f"{req_marker} **{skill}** {level_e} ({info['your_level']}) -> needed by {count} position(s)")
 
     lines.append("")
-    lines.append("Legend: ❗required 💡preferred | ⬜none 🟧learning 🟨some 🟩strong")
+    lines.append("Legend: ! required ? preferred | [ ] none [o] learning [~] some [x] strong")
 
     print("\n".join(lines))
-
 
 def cmd_report_stats(args):
     """Generate stats overview as formatted Markdown."""

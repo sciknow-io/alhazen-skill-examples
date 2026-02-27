@@ -62,6 +62,8 @@ Environment:
     TYPEDB_HOST       TypeDB server host (default: localhost)
     TYPEDB_PORT       TypeDB server port (default: 1729)
     TYPEDB_DATABASE   Database name (default: alhazen_notebook)
+    TYPEDB_USERNAME   TypeDB username (default: admin)
+    TYPEDB_PASSWORD   TypeDB password (default: password)
     ALHAZEN_CACHE_DIR File cache directory (default: ~/.alhazen/cache)
 """
 
@@ -81,13 +83,13 @@ except ImportError:
     REQUESTS_AVAILABLE = False
 
 try:
-    from typedb.driver import SessionType, TransactionType, TypeDB
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
     TYPEDB_AVAILABLE = True
 except ImportError:
     TYPEDB_AVAILABLE = False
     print(
-        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=2.25.0,<3.0.0'",
+        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.8.0'",
         file=sys.stderr,
     )
 
@@ -121,6 +123,8 @@ except ImportError:
 TYPEDB_HOST = os.getenv("TYPEDB_HOST", "localhost")
 TYPEDB_PORT = int(os.getenv("TYPEDB_PORT", "1729"))
 TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "alhazen_notebook")
+TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
+TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 
 
 # =============================================================================
@@ -130,7 +134,11 @@ TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "alhazen_notebook")
 
 def get_driver():
     """Get TypeDB driver connection."""
-    return TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
+    return TypeDB.driver(
+        f"{TYPEDB_HOST}:{TYPEDB_PORT}",
+        Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD),
+        DriverOptions(is_tls_enabled=False),
+    )
 
 
 def generate_id(prefix: str) -> str:
@@ -146,11 +154,11 @@ def escape_string(s: str) -> str:
 
 
 def get_attr(entity: dict, attr_name: str, default=None):
-    """Safely extract attribute value from TypeDB fetch result."""
-    attr_list = entity.get(attr_name, [])
-    if attr_list and len(attr_list) > 0:
-        return attr_list[0].get("value", default)
-    return default
+    """Safely extract attribute value from TypeDB 3.x fetch result.
+
+    TypeDB 3.x fetch returns plain Python dicts directly.
+    """
+    return entity.get(attr_name, default)
 
 
 def get_timestamp() -> str:
@@ -216,10 +224,9 @@ def cmd_add_case(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "case_id": case_id, "name": args.name}))
 
@@ -248,10 +255,9 @@ def cmd_add_gene(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "gene_id": gene_id, "symbol": args.symbol}))
 
@@ -302,20 +308,19 @@ def cmd_add_variant(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Link to gene if gene ID provided
-            if args.gene_id:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    rel_query = f'''match
-                        $v isa apm-variant, has id "{variant_id}";
-                        $g isa apm-gene, has id "{args.gene_id}";
-                    insert (variant: $v, gene: $g) isa apm-variant-in-gene;'''
-                    tx.query.insert(rel_query)
-                    tx.commit()
+        # Link to gene if gene ID provided
+        if args.gene_id:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                rel_query = f'''match
+                    $v isa apm-variant, has id "{variant_id}";
+                    $g isa apm-gene, has id "{args.gene_id}";
+                insert (variant: $v, gene: $g) isa apm-variant-in-gene;'''
+                tx.query(rel_query).resolve()
+                tx.commit()
 
     print(json.dumps({"success": True, "variant_id": variant_id, "name": name}))
 
@@ -346,10 +351,9 @@ def cmd_add_disease(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "disease_id": disease_id, "name": args.name}))
 
@@ -375,10 +379,9 @@ def cmd_add_phenotype(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "phenotype_id": phenotype_id, "hpo_id": args.hpo_id, "label": args.label}))
 
@@ -403,10 +406,9 @@ def cmd_add_protein(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "protein_id": protein_id, "name": args.name}))
 
@@ -435,10 +437,9 @@ def cmd_add_drug(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "drug_id": drug_id, "name": args.name}))
 
@@ -459,10 +460,9 @@ def cmd_add_pathway(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "pathway_id": pathway_id, "name": args.name}))
 
@@ -487,10 +487,9 @@ def cmd_add_model(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "model_id": model_id, "name": args.name}))
 
@@ -529,25 +528,25 @@ def cmd_ingest_report(args):
             cache_path = cache_result["cache_path"]
             content = None  # Don't store inline
 
+    query = f'''insert $a isa apm-sequencing-report,
+        has id "{artifact_id}",
+        has name "{escape_string(name)}",
+        has mime-type "{mime_type}",
+        has file-size {file_size},
+        has source-uri "file://{escape_string(os.path.abspath(file_path))}",
+        has created-at {timestamp}'''
+
+    if content:
+        query += f', has content "{escape_string(content)}"'
+    if cache_path:
+        query += f', has cache-path "{cache_path}"'
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''insert $a isa apm-sequencing-report,
-                    has id "{artifact_id}",
-                    has name "{escape_string(name)}",
-                    has mime-type "{mime_type}",
-                    has file-size {file_size},
-                    has source-uri "file://{escape_string(os.path.abspath(file_path))}",
-                    has created-at {timestamp}'''
-
-                if content:
-                    query += f', has content "{escape_string(content)}"'
-                if cache_path:
-                    query += f', has cache-path "{cache_path}"'
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({
         "success": True,
@@ -588,37 +587,37 @@ def cmd_ingest_record(args):
 
     name = args.name or title or f"{args.type} record: {args.source_id or args.url[:50]}"
 
+    if CACHE_AVAILABLE and should_cache(content):
+        cache_result = save_to_cache(artifact_id=artifact_id, content=content, mime_type="text/html")
+        query = f'''insert $a isa {artifact_type},
+            has id "{artifact_id}",
+            has name "{escape_string(name)}",
+            has cache-path "{cache_result['cache_path']}",
+            has mime-type "text/html",
+            has file-size {cache_result['file_size']},
+            has content-hash "{cache_result['content_hash']}",
+            has source-uri "{escape_string(args.url)}",
+            has created-at {timestamp}'''
+    else:
+        query = f'''insert $a isa {artifact_type},
+            has id "{artifact_id}",
+            has name "{escape_string(name)}",
+            has content "{escape_string(content)}",
+            has source-uri "{escape_string(args.url)}",
+            has created-at {timestamp}'''
+
+    # Add type-specific attributes
+    if args.type == "clinvar" and args.source_id:
+        query += f', has apm-clinvar-id "{escape_string(args.source_id)}"'
+    elif args.type == "omim" and args.source_id:
+        query += f', has apm-omim-id "{escape_string(args.source_id)}"'
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                if CACHE_AVAILABLE and should_cache(content):
-                    cache_result = save_to_cache(artifact_id=artifact_id, content=content, mime_type="text/html")
-                    query = f'''insert $a isa {artifact_type},
-                        has id "{artifact_id}",
-                        has name "{escape_string(name)}",
-                        has cache-path "{cache_result['cache_path']}",
-                        has mime-type "text/html",
-                        has file-size {cache_result['file_size']},
-                        has content-hash "{cache_result['content_hash']}",
-                        has source-uri "{escape_string(args.url)}",
-                        has created-at {timestamp}'''
-                else:
-                    query = f'''insert $a isa {artifact_type},
-                        has id "{artifact_id}",
-                        has name "{escape_string(name)}",
-                        has content "{escape_string(content)}",
-                        has source-uri "{escape_string(args.url)}",
-                        has created-at {timestamp}'''
-
-                # Add type-specific attributes
-                if args.type == "clinvar" and args.source_id:
-                    query += f', has apm-clinvar-id "{escape_string(args.source_id)}"'
-                elif args.type == "omim" and args.source_id:
-                    query += f', has apm-omim-id "{escape_string(args.source_id)}"'
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({
         "success": True,
@@ -637,101 +636,101 @@ def cmd_ingest_record(args):
 
 def cmd_link_case_phenotype(args):
     """Link a phenotype to a case."""
+    query = f'''match
+        $c isa apm-case, has id "{args.case}";
+        $p isa apm-phenotype, has id "{args.phenotype}";
+    insert $r (case: $c, phenotype: $p) isa apm-case-has-phenotype'''
+
+    if args.onset:
+        query += f', has apm-onset-category "{args.onset}"'
+    if args.severity:
+        query += f', has apm-severity "{args.severity}"'
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $c isa apm-case, has id "{args.case}";
-                    $p isa apm-phenotype, has id "{args.phenotype}";
-                insert $r (case: $c, phenotype: $p) isa apm-case-has-phenotype'''
-
-                if args.onset:
-                    query += f', has apm-onset-category "{args.onset}"'
-                if args.severity:
-                    query += f', has apm-severity "{args.severity}"'
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "case": args.case, "phenotype": args.phenotype}))
 
 
 def cmd_link_case_variant(args):
     """Link a variant to a case."""
+    query = f'''match
+        $c isa apm-case, has id "{args.case}";
+        $v isa apm-variant, has id "{args.variant}";
+    insert $r (case: $c, variant: $v) isa apm-case-has-variant'''
+
+    if args.zygosity:
+        query += f', has apm-zygosity "{args.zygosity}"'
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $c isa apm-case, has id "{args.case}";
-                    $v isa apm-variant, has id "{args.variant}";
-                insert $r (case: $c, variant: $v) isa apm-case-has-variant'''
-
-                if args.zygosity:
-                    query += f', has apm-zygosity "{args.zygosity}"'
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "case": args.case, "variant": args.variant}))
 
 
 def cmd_link_case_diagnosis(args):
     """Link a diagnosis to a case."""
+    query = f'''match
+        $c isa apm-case, has id "{args.case}";
+        $d isa apm-disease, has id "{args.disease}";
+    insert $r (case: $c, disease: $d) isa apm-case-has-diagnosis'''
+
+    if args.status:
+        query += f', has apm-diagnostic-status "{args.status}"'
+    if args.confidence is not None:
+        query += f", has confidence {args.confidence}"
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $c isa apm-case, has id "{args.case}";
-                    $d isa apm-disease, has id "{args.disease}";
-                insert $r (case: $c, disease: $d) isa apm-case-has-diagnosis'''
-
-                if args.status:
-                    query += f', has apm-diagnostic-status "{args.status}"'
-                if args.confidence is not None:
-                    query += f", has confidence {args.confidence}"
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "case": args.case, "disease": args.disease}))
 
 
 def cmd_link_variant_gene(args):
     """Link a variant to a gene."""
+    query = f'''match
+        $v isa apm-variant, has id "{args.variant}";
+        $g isa apm-gene, has id "{args.gene}";
+    insert (variant: $v, gene: $g) isa apm-variant-in-gene;'''
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $v isa apm-variant, has id "{args.variant}";
-                    $g isa apm-gene, has id "{args.gene}";
-                insert (variant: $v, gene: $g) isa apm-variant-in-gene;'''
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "variant": args.variant, "gene": args.gene}))
 
 
 def cmd_link_variant_disease(args):
     """Create a variant pathogenicity claim."""
+    query = f'''match
+        $v isa apm-variant, has id "{args.variant}";
+        $d isa apm-disease, has id "{args.disease}";
+    insert $r (variant: $v, disease: $d) isa apm-variant-pathogenicity'''
+
+    if args.acmg_class:
+        query += f', has apm-acmg-class "{args.acmg_class}"'
+    if args.confidence is not None:
+        query += f", has confidence {args.confidence}"
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $v isa apm-variant, has id "{args.variant}";
-                    $d isa apm-disease, has id "{args.disease}";
-                insert $r (variant: $v, disease: $d) isa apm-variant-pathogenicity'''
-
-                if args.acmg_class:
-                    query += f', has apm-acmg-class "{args.acmg_class}"'
-                if args.confidence is not None:
-                    query += f", has confidence {args.confidence}"
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "variant": args.variant, "disease": args.disease}))
 
@@ -743,131 +742,131 @@ def cmd_link_variant_disease(args):
 
 def cmd_link_mechanism(args):
     """Create a mechanism of harm relation."""
+    query = f'''match
+        $v isa apm-variant, has id "{args.variant}";
+        $g isa apm-gene, has id "{args.gene}";
+    insert $r (variant: $v, gene: $g) isa apm-mechanism-of-harm'''
+
+    if args.mechanism_type:
+        query += f', has apm-mechanism-type "{args.mechanism_type}"'
+    if args.functional_impact:
+        query += f', has apm-functional-impact "{args.functional_impact}"'
+    if args.confidence is not None:
+        query += f", has confidence {args.confidence}"
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $v isa apm-variant, has id "{args.variant}";
-                    $g isa apm-gene, has id "{args.gene}";
-                insert $r (variant: $v, gene: $g) isa apm-mechanism-of-harm'''
-
-                if args.mechanism_type:
-                    query += f', has apm-mechanism-type "{args.mechanism_type}"'
-                if args.functional_impact:
-                    query += f', has apm-functional-impact "{args.functional_impact}"'
-                if args.confidence is not None:
-                    query += f", has confidence {args.confidence}"
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "variant": args.variant, "gene": args.gene}))
 
 
 def cmd_link_gene_protein(args):
     """Link gene to protein it encodes."""
+    query = f'''match
+        $g isa apm-gene, has id "{args.gene}";
+        $p isa apm-protein, has id "{args.protein}";
+    insert (gene: $g, protein: $p) isa apm-gene-encodes;'''
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $g isa apm-gene, has id "{args.gene}";
-                    $p isa apm-protein, has id "{args.protein}";
-                insert (gene: $g, protein: $p) isa apm-gene-encodes;'''
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "gene": args.gene, "protein": args.protein}))
 
 
 def cmd_link_drug_target(args):
     """Link drug to its target gene/protein."""
+    # Build match clause for available targets
+    match_parts = [f'$d isa apm-drug, has id "{args.drug}";']
+    insert_roles = ["drug: $d"]
+
+    if args.gene:
+        match_parts.append(f'$g isa apm-gene, has id "{args.gene}";')
+        insert_roles.append("target-gene: $g")
+    if args.protein:
+        match_parts.append(f'$p isa apm-protein, has id "{args.protein}";')
+        insert_roles.append("target-protein: $p")
+
+    match_clause = "\n                ".join(match_parts)
+    roles = ", ".join(insert_roles)
+
+    query = f'''match
+        {match_clause}
+    insert $r ({roles}) isa apm-drug-target'''
+
+    if args.approach:
+        query += f', has apm-therapeutic-approach "{args.approach}"'
+    if args.confidence is not None:
+        query += f", has confidence {args.confidence}"
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                # Build match clause for available targets
-                match_parts = [f'$d isa apm-drug, has id "{args.drug}";']
-                insert_roles = ["drug: $d"]
-
-                if args.gene:
-                    match_parts.append(f'$g isa apm-gene, has id "{args.gene}";')
-                    insert_roles.append("target-gene: $g")
-                if args.protein:
-                    match_parts.append(f'$p isa apm-protein, has id "{args.protein}";')
-                    insert_roles.append("target-protein: $p")
-
-                match_clause = "\n                    ".join(match_parts)
-                roles = ", ".join(insert_roles)
-
-                query = f'''match
-                    {match_clause}
-                insert $r ({roles}) isa apm-drug-target'''
-
-                if args.approach:
-                    query += f', has apm-therapeutic-approach "{args.approach}"'
-                if args.confidence is not None:
-                    query += f", has confidence {args.confidence}"
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "drug": args.drug, "gene": args.gene, "protein": args.protein}))
 
 
 def cmd_link_drug_indication(args):
     """Link drug to disease indication."""
+    query = f'''match
+        $d isa apm-drug, has id "{args.drug}";
+        $dis isa apm-disease, has id "{args.disease}";
+    insert $r (drug: $d, indication: $dis) isa apm-drug-indication'''
+
+    if args.stage:
+        query += f', has apm-development-stage "{args.stage}"'
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $d isa apm-drug, has id "{args.drug}";
-                    $dis isa apm-disease, has id "{args.disease}";
-                insert $r (drug: $d, indication: $dis) isa apm-drug-indication'''
-
-                if args.stage:
-                    query += f', has apm-development-stage "{args.stage}"'
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "drug": args.drug, "disease": args.disease}))
 
 
 def cmd_link_pathway_gene(args):
     """Link gene to pathway."""
+    query = f'''match
+        $g isa apm-gene, has id "{args.gene}";
+        $p isa apm-pathway, has id "{args.pathway}";
+    insert (member-gene: $g, pathway: $p) isa apm-pathway-membership;'''
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $g isa apm-gene, has id "{args.gene}";
-                    $p isa apm-pathway, has id "{args.pathway}";
-                insert (member-gene: $g, pathway: $p) isa apm-pathway-membership;'''
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "gene": args.gene, "pathway": args.pathway}))
 
 
 def cmd_link_model_disease(args):
     """Link model to disease."""
+    query = f'''match
+        $m isa apm-disease-model, has id "{args.model}";
+        $d isa apm-disease, has id "{args.disease}";
+    insert $r (model: $m, disease: $d) isa apm-model-for-disease'''
+
+    if args.recapitulated is not None:
+        query += f", has apm-phenotype-recapitulated {str(args.recapitulated).lower()}"
+    if args.confidence is not None:
+        query += f", has confidence {args.confidence}"
+
+    query += ";"
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                query = f'''match
-                    $m isa apm-disease-model, has id "{args.model}";
-                    $d isa apm-disease, has id "{args.disease}";
-                insert $r (model: $m, disease: $d) isa apm-model-for-disease'''
-
-                if args.recapitulated is not None:
-                    query += f", has apm-phenotype-recapitulated {str(args.recapitulated).lower()}"
-                if args.confidence is not None:
-                    query += f", has confidence {args.confidence}"
-
-                query += ";"
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "model": args.model, "disease": args.disease}))
 
@@ -938,41 +937,40 @@ def cmd_add_note(args):
     query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(query).resolve()
+            tx.commit()
 
-            # Link to subject
-            with session.transaction(TransactionType.WRITE) as tx:
-                about_query = f'''match
-                    $n isa note, has id "{note_id}";
-                    $s isa entity, has id "{args.about}";
-                insert (note: $n, subject: $s) isa aboutness;'''
-                tx.query.insert(about_query)
-                tx.commit()
+        # Link to subject
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            about_query = f'''match
+                $n isa note, has id "{note_id}";
+                $s isa entity, has id "{args.about}";
+            insert (note: $n, subject: $s) isa aboutness;'''
+            tx.query(about_query).resolve()
+            tx.commit()
 
-            # Add tags
-            if args.tags:
-                for tag_name in args.tags:
-                    tag_id = generate_id("tag")
-                    with session.transaction(TransactionType.READ) as tx:
-                        tag_check = f'match $t isa tag, has name "{tag_name}"; fetch $t: id;'
-                        existing_tag = list(tx.query.fetch(tag_check))
+        # Add tags
+        if args.tags:
+            for tag_name in args.tags:
+                tag_id = generate_id("tag")
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+                    tag_check = f'match $t isa tag, has name "{tag_name}"; fetch {{ "id": $t.id }};'
+                    existing_tag = list(tx.query(tag_check).resolve())
 
-                    if not existing_tag:
-                        with session.transaction(TransactionType.WRITE) as tx:
-                            tx.query.insert(
-                                f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
-                            )
-                            tx.commit()
-
-                    with session.transaction(TransactionType.WRITE) as tx:
-                        tx.query.insert(f'''match
-                            $n isa note, has id "{note_id}";
-                            $t isa tag, has name "{tag_name}";
-                        insert (tagged-entity: $n, tag: $t) isa tagging;''')
+                if not existing_tag:
+                    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                        tx.query(
+                            f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";'
+                        ).resolve()
                         tx.commit()
+
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                    tx.query(f'''match
+                        $n isa note, has id "{note_id}";
+                        $t isa tag, has name "{tag_name}";
+                    insert (tagged-entity: $n, tag: $t) isa tagging;''').resolve()
+                    tx.commit()
 
     print(json.dumps({"success": True, "note_id": note_id, "about": args.about, "type": args.type}))
 
@@ -985,54 +983,79 @@ def cmd_add_note(args):
 def cmd_show_case(args):
     """Get full case details."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Case details
-                case_query = f'''match
-                    $c isa apm-case, has id "{args.id}";
-                fetch $c: id, name, description, apm-diagnostic-status,
-                    apm-therapeutic-status, apm-investigation-phase;'''
-                case_result = list(tx.query.fetch(case_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Case details
+            case_query = f'''match
+                $c isa apm-case, has id "{args.id}";
+            fetch {{
+                "id": $c.id,
+                "name": $c.name,
+                "description": $c.description,
+                "apm-diagnostic-status": $c.apm-diagnostic-status,
+                "apm-therapeutic-status": $c.apm-therapeutic-status,
+                "apm-investigation-phase": $c.apm-investigation-phase
+            }};'''
+            case_result = list(tx.query(case_query).resolve())
 
-                if not case_result:
-                    print(json.dumps({"success": False, "error": "Case not found"}))
-                    return
+            if not case_result:
+                print(json.dumps({"success": False, "error": "Case not found"}))
+                return
 
-                # Phenotypes
-                phenotype_query = f'''match
-                    $c isa apm-case, has id "{args.id}";
-                    (case: $c, phenotype: $p) isa apm-case-has-phenotype;
-                fetch $p: id, apm-hpo-id, apm-hpo-label, apm-onset-category, apm-severity;'''
-                phenotypes = list(tx.query.fetch(phenotype_query))
+            # Phenotypes
+            phenotype_query = f'''match
+                $c isa apm-case, has id "{args.id}";
+                (case: $c, phenotype: $p) isa apm-case-has-phenotype;
+            fetch {{
+                "id": $p.id,
+                "apm-hpo-id": $p.apm-hpo-id,
+                "apm-hpo-label": $p.apm-hpo-label,
+                "apm-onset-category": $p.apm-onset-category,
+                "apm-severity": $p.apm-severity
+            }};'''
+            phenotypes = list(tx.query(phenotype_query).resolve())
 
-                # Variants
-                variant_query = f'''match
-                    $c isa apm-case, has id "{args.id}";
-                    (case: $c, variant: $v) isa apm-case-has-variant;
-                fetch $v: id, name, apm-hgvs-c, apm-hgvs-p, apm-acmg-class;'''
-                variants = list(tx.query.fetch(variant_query))
+            # Variants
+            variant_query = f'''match
+                $c isa apm-case, has id "{args.id}";
+                (case: $c, variant: $v) isa apm-case-has-variant;
+            fetch {{
+                "id": $v.id,
+                "name": $v.name,
+                "apm-hgvs-c": $v.apm-hgvs-c,
+                "apm-hgvs-p": $v.apm-hgvs-p,
+                "apm-acmg-class": $v.apm-acmg-class
+            }};'''
+            variants = list(tx.query(variant_query).resolve())
 
-                # Diagnosis
-                diagnosis_query = f'''match
-                    $c isa apm-case, has id "{args.id}";
-                    (case: $c, disease: $d) isa apm-case-has-diagnosis;
-                fetch $d: id, name, apm-omim-id;'''
-                diagnoses = list(tx.query.fetch(diagnosis_query))
+            # Diagnosis
+            diagnosis_query = f'''match
+                $c isa apm-case, has id "{args.id}";
+                (case: $c, disease: $d) isa apm-case-has-diagnosis;
+            fetch {{
+                "id": $d.id,
+                "name": $d.name,
+                "apm-omim-id": $d.apm-omim-id
+            }};'''
+            diagnoses = list(tx.query(diagnosis_query).resolve())
 
-                # Notes
-                notes_query = f'''match
-                    $c isa apm-case, has id "{args.id}";
-                    (note: $n, subject: $c) isa aboutness;
-                fetch $n: id, name, content;'''
-                notes = list(tx.query.fetch(notes_query))
+            # Notes
+            notes_query = f'''match
+                $c isa apm-case, has id "{args.id}";
+                (note: $n, subject: $c) isa aboutness;
+            fetch {{
+                "id": $n.id,
+                "name": $n.name,
+                "content": $n.content
+            }};'''
+            notes = list(tx.query(notes_query).resolve())
 
     output = {
         "success": True,
-        "case": case_result[0]["c"],
-        "phenotypes": [p["p"] for p in phenotypes],
-        "variants": [v["v"] for v in variants],
-        "diagnoses": [d["d"] for d in diagnoses],
-        "notes": [n["n"] for n in notes],
+        "case": case_result[0],
+        "phenotypes": phenotypes,
+        "variants": variants,
+        "diagnoses": diagnoses,
+        "notes": notes,
     }
 
     print(json.dumps(output, indent=2, default=str))
@@ -1041,44 +1064,59 @@ def cmd_show_case(args):
 def cmd_show_diagnostic_chain(args):
     """Show the diagnostic reasoning chain for a case."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Full diagnostic chain
-                chain_query = f'''match
-                    $case isa apm-case, has id "{args.case}";
-                    (case: $case, phenotype: $p) isa apm-case-has-phenotype;
-                fetch $case: name; $p: apm-hpo-id, apm-hpo-label;'''
-                phenotypes = list(tx.query.fetch(chain_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Full diagnostic chain
+            chain_query = f'''match
+                $case isa apm-case, has id "{args.case}";
+                (case: $case, phenotype: $p) isa apm-case-has-phenotype;
+            fetch {{
+                "case-name": $case.name,
+                "apm-hpo-id": $p.apm-hpo-id,
+                "apm-hpo-label": $p.apm-hpo-label
+            }};'''
+            phenotypes = list(tx.query(chain_query).resolve())
 
-                variant_query = f'''match
-                    $case isa apm-case, has id "{args.case}";
-                    (case: $case, variant: $v) isa apm-case-has-variant;
-                    (variant: $v, gene: $g) isa apm-variant-in-gene;
-                fetch $v: id, apm-hgvs-c, apm-hgvs-p, apm-acmg-class;
-                    $g: apm-gene-symbol;'''
-                variants = list(tx.query.fetch(variant_query))
+            variant_query = f'''match
+                $case isa apm-case, has id "{args.case}";
+                (case: $case, variant: $v) isa apm-case-has-variant;
+                (variant: $v, gene: $g) isa apm-variant-in-gene;
+            fetch {{
+                "variant-id": $v.id,
+                "apm-hgvs-c": $v.apm-hgvs-c,
+                "apm-hgvs-p": $v.apm-hgvs-p,
+                "apm-acmg-class": $v.apm-acmg-class,
+                "apm-gene-symbol": $g.apm-gene-symbol
+            }};'''
+            variants = list(tx.query(variant_query).resolve())
 
-                diagnosis_query = f'''match
-                    $case isa apm-case, has id "{args.case}";
-                    (case: $case, disease: $d) isa apm-case-has-diagnosis;
-                fetch $d: name, apm-omim-id;'''
-                diagnoses = list(tx.query.fetch(diagnosis_query))
+            diagnosis_query = f'''match
+                $case isa apm-case, has id "{args.case}";
+                (case: $case, disease: $d) isa apm-case-has-diagnosis;
+            fetch {{
+                "name": $d.name,
+                "apm-omim-id": $d.apm-omim-id
+            }};'''
+            diagnoses = list(tx.query(diagnosis_query).resolve())
 
-                # Pathogenicity evidence
-                pathogenicity_query = f'''match
-                    $case isa apm-case, has id "{args.case}";
-                    (case: $case, variant: $v) isa apm-case-has-variant;
-                    (variant: $v, disease: $d) isa apm-variant-pathogenicity,
-                        has apm-acmg-class $acmg;
-                fetch $v: apm-hgvs-c; $d: name; $acmg;'''
-                pathogenicity = list(tx.query.fetch(pathogenicity_query))
+            # Pathogenicity evidence
+            pathogenicity_query = f'''match
+                $case isa apm-case, has id "{args.case}";
+                (case: $case, variant: $v) isa apm-case-has-variant;
+                (variant: $v, disease: $d) isa apm-variant-pathogenicity,
+                    has apm-acmg-class $acmg;
+            fetch {{
+                "apm-hgvs-c": $v.apm-hgvs-c,
+                "disease-name": $d.name,
+                "apm-acmg-class": $acmg
+            }};'''
+            pathogenicity = list(tx.query(pathogenicity_query).resolve())
 
     output = {
         "success": True,
         "case_id": args.case,
-        "phenotypes": [p["p"] for p in phenotypes],
-        "variants_with_genes": [{"variant": v["v"], "gene": v["g"]} for v in variants],
-        "diagnoses": [d["d"] for d in diagnoses],
+        "phenotypes": phenotypes,
+        "variants_with_genes": variants,
+        "diagnoses": diagnoses,
         "pathogenicity": pathogenicity,
     }
 
@@ -1088,42 +1126,54 @@ def cmd_show_diagnostic_chain(args):
 def cmd_show_therapeutic_chain(args):
     """Show the therapeutic reasoning chain for a case."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Mechanism of harm
-                mechanism_query = f'''match
-                    $case isa apm-case, has id "{args.case}";
-                    (case: $case, variant: $v) isa apm-case-has-variant;
-                    (variant: $v, gene: $g) isa apm-mechanism-of-harm,
-                        has apm-mechanism-type $mech, has apm-functional-impact $impact;
-                fetch $v: apm-hgvs-c; $g: apm-gene-symbol; $mech; $impact;'''
-                mechanisms = list(tx.query.fetch(mechanism_query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Mechanism of harm
+            mechanism_query = f'''match
+                $case isa apm-case, has id "{args.case}";
+                (case: $case, variant: $v) isa apm-case-has-variant;
+                (variant: $v, gene: $g) isa apm-mechanism-of-harm,
+                    has apm-mechanism-type $mech, has apm-functional-impact $impact;
+            fetch {{
+                "apm-hgvs-c": $v.apm-hgvs-c,
+                "apm-gene-symbol": $g.apm-gene-symbol,
+                "apm-mechanism-type": $mech,
+                "apm-functional-impact": $impact
+            }};'''
+            mechanisms = list(tx.query(mechanism_query).resolve())
 
-                # Gene-protein links
-                protein_query = f'''match
-                    $case isa apm-case, has id "{args.case}";
-                    (case: $case, variant: $v) isa apm-case-has-variant;
-                    (variant: $v, gene: $g) isa apm-variant-in-gene;
-                    (gene: $g, protein: $p) isa apm-gene-encodes;
-                fetch $g: apm-gene-symbol; $p: name, apm-uniprot-id;'''
-                proteins = list(tx.query.fetch(protein_query))
+            # Gene-protein links
+            protein_query = f'''match
+                $case isa apm-case, has id "{args.case}";
+                (case: $case, variant: $v) isa apm-case-has-variant;
+                (variant: $v, gene: $g) isa apm-variant-in-gene;
+                (gene: $g, protein: $p) isa apm-gene-encodes;
+            fetch {{
+                "apm-gene-symbol": $g.apm-gene-symbol,
+                "protein-name": $p.name,
+                "apm-uniprot-id": $p.apm-uniprot-id
+            }};'''
+            proteins = list(tx.query(protein_query).resolve())
 
-                # Drug targets
-                drug_query = f'''match
-                    $case isa apm-case, has id "{args.case}";
-                    (case: $case, variant: $v) isa apm-case-has-variant;
-                    (variant: $v, gene: $g) isa apm-variant-in-gene;
-                    (drug: $d, target-gene: $g) isa apm-drug-target;
-                fetch $d: name, apm-therapeutic-approach, apm-development-stage;
-                    $g: apm-gene-symbol;'''
-                drugs = list(tx.query.fetch(drug_query))
+            # Drug targets
+            drug_query = f'''match
+                $case isa apm-case, has id "{args.case}";
+                (case: $case, variant: $v) isa apm-case-has-variant;
+                (variant: $v, gene: $g) isa apm-variant-in-gene;
+                (drug: $d, target-gene: $g) isa apm-drug-target;
+            fetch {{
+                "drug-name": $d.name,
+                "apm-therapeutic-approach": $d.apm-therapeutic-approach,
+                "apm-development-stage": $d.apm-development-stage,
+                "apm-gene-symbol": $g.apm-gene-symbol
+            }};'''
+            drugs = list(tx.query(drug_query).resolve())
 
     output = {
         "success": True,
         "case_id": args.case,
         "mechanisms": mechanisms,
-        "proteins": [{"gene": p["g"], "protein": p["p"]} for p in proteins],
-        "drug_targets": [{"drug": d["d"], "gene": d["g"]} for d in drugs],
+        "proteins": proteins,
+        "drug_targets": drugs,
     }
 
     print(json.dumps(output, indent=2, default=str))
@@ -1131,26 +1181,32 @@ def cmd_show_therapeutic_chain(args):
 
 def cmd_list_cases(args):
     """List all investigation cases."""
+    if args.status:
+        match_clause = f'match $c isa apm-case, has apm-diagnostic-status "{args.status}";'
+    else:
+        match_clause = "match $c isa apm-case;"
+
+    query = match_clause + '''
+fetch {
+    "id": $c.id,
+    "name": $c.name,
+    "apm-diagnostic-status": $c.apm-diagnostic-status,
+    "apm-therapeutic-status": $c.apm-therapeutic-status,
+    "apm-investigation-phase": $c.apm-investigation-phase
+};'''
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = "match $c isa apm-case;"
-
-                if args.status:
-                    query = f'''match $c isa apm-case,
-                        has apm-diagnostic-status "{args.status}";'''
-
-                query += "\nfetch $c: id, name, apm-diagnostic-status, apm-therapeutic-status, apm-investigation-phase;"
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            results = list(tx.query(query).resolve())
 
     cases = []
     for r in results:
         cases.append({
-            "id": get_attr(r["c"], "id"),
-            "name": get_attr(r["c"], "name"),
-            "diagnostic_status": get_attr(r["c"], "apm-diagnostic-status"),
-            "therapeutic_status": get_attr(r["c"], "apm-therapeutic-status"),
-            "phase": get_attr(r["c"], "apm-investigation-phase"),
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "diagnostic_status": r.get("apm-diagnostic-status"),
+            "therapeutic_status": r.get("apm-therapeutic-status"),
+            "phase": r.get("apm-investigation-phase"),
         })
 
     print(json.dumps({"success": True, "cases": cases, "count": len(cases)}, indent=2))
@@ -1158,14 +1214,19 @@ def cmd_list_cases(args):
 
 def _list_entities(entity_type, fetch_attrs, label):
     """Generic list command for APM entities."""
-    with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = f"match $e isa {entity_type};\nfetch $e: {fetch_attrs};"
-                results = list(tx.query.fetch(query))
+    # Build JSON-style fetch block from comma-separated attribute names
+    attr_list = [a.strip() for a in fetch_attrs.split(",")]
+    fetch_pairs = ",\n        ".join(f'"{a}": $e.{a}' for a in attr_list)
+    query = f'''match $e isa {entity_type};
+fetch {{
+    {fetch_pairs}
+}};'''
 
-    entities = [r["e"] for r in results]
-    print(json.dumps({"success": True, label: entities, "count": len(entities)}, indent=2, default=str))
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            results = list(tx.query(query).resolve())
+
+    print(json.dumps({"success": True, label: results, "count": len(results)}, indent=2, default=str))
 
 
 def cmd_list_genes(args):
@@ -1195,54 +1256,61 @@ def cmd_list_drugs(args):
 
 def cmd_list_artifacts(args):
     """List artifacts by analysis status."""
+    # Get all APM artifacts (sequencing reports, records, etc.)
+    query = """match
+        $a isa artifact;
+        $a has id $aid;
+        { $a isa apm-sequencing-report; } or
+        { $a isa apm-clinvar-record; } or
+        { $a isa apm-omim-record; } or
+        { $a isa apm-gnomad-record; } or
+        { $a isa apm-prediction-record; } or
+        { $a isa apm-drug-record; } or
+        { $a isa apm-pathway-record; } or
+        { $a isa apm-screening-result; };
+    fetch {
+        "id": $a.id,
+        "name": $a.name,
+        "source-uri": $a.source-uri,
+        "created-at": $a.created-at
+    };"""
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                # Get all APM artifacts (sequencing reports, records, etc.)
-                query = """match
-                    $a isa artifact;
-                    $a has id $aid;
-                    { $a isa apm-sequencing-report; } or
-                    { $a isa apm-clinvar-record; } or
-                    { $a isa apm-omim-record; } or
-                    { $a isa apm-gnomad-record; } or
-                    { $a isa apm-prediction-record; } or
-                    { $a isa apm-drug-record; } or
-                    { $a isa apm-pathway-record; } or
-                    { $a isa apm-screening-result; };
-                fetch $a: id, name, source-uri, created-at;"""
-                artifacts = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            artifacts = list(tx.query(query).resolve())
 
-                results = []
-                for art in artifacts:
-                    artifact_id = get_attr(art["a"], "id")
+            results = []
+            for art in artifacts:
+                artifact_id = art.get("id")
 
-                    # Check for notes (heuristic for "analyzed")
-                    notes_query = f'''match
-                        $a isa artifact, has id "{artifact_id}";
-                        (artifact: $a, referent: $e) isa representation;
-                        (note: $n, subject: $e) isa aboutness;
-                    fetch $n: id;'''
+                # Check for notes (heuristic for "analyzed")
+                notes_query = f'''match
+                    $a isa artifact, has id "{artifact_id}";
+                    (artifact: $a, referent: $e) isa representation;
+                    (note: $n, subject: $e) isa aboutness;
+                fetch {{
+                    "id": $n.id
+                }};'''
 
-                    try:
-                        notes = list(tx.query.fetch(notes_query))
-                        has_notes = len(notes) > 0
-                    except Exception:
-                        has_notes = False
+                try:
+                    notes = list(tx.query(notes_query).resolve())
+                    has_notes = len(notes) > 0
+                except Exception:
+                    has_notes = False
 
-                    status = "analyzed" if has_notes else "raw"
+                status = "analyzed" if has_notes else "raw"
 
-                    if args.status and args.status != "all":
-                        if args.status != status:
-                            continue
+                if args.status and args.status != "all":
+                    if args.status != status:
+                        continue
 
-                    results.append({
-                        "id": artifact_id,
-                        "name": get_attr(art["a"], "name"),
-                        "source_url": get_attr(art["a"], "source-uri"),
-                        "created_at": get_attr(art["a"], "created-at"),
-                        "status": status,
-                    })
+                results.append({
+                    "id": artifact_id,
+                    "name": art.get("name"),
+                    "source_url": art.get("source-uri"),
+                    "created_at": art.get("created-at"),
+                    "status": status,
+                })
 
     print(json.dumps({
         "success": True,
@@ -1254,21 +1322,30 @@ def cmd_list_artifacts(args):
 
 def cmd_show_artifact(args):
     """Get artifact content for sensemaking."""
+    query = f'''match
+        $a isa artifact, has id "{args.id}";
+    fetch {{
+        "id": $a.id,
+        "name": $a.name,
+        "content": $a.content,
+        "cache-path": $a.cache-path,
+        "mime-type": $a.mime-type,
+        "file-size": $a.file-size,
+        "source-uri": $a.source-uri,
+        "created-at": $a.created-at
+    }};'''
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = f'''match
-                    $a isa artifact, has id "{args.id}";
-                fetch $a: id, name, content, cache-path, mime-type, file-size, source-uri, created-at;'''
-                result = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            result = list(tx.query(query).resolve())
 
-                if not result:
-                    print(json.dumps({"success": False, "error": "Artifact not found"}))
-                    return
+    if not result:
+        print(json.dumps({"success": False, "error": "Artifact not found"}))
+        return
 
-    art = result[0]["a"]
+    art = result[0]
 
-    cache_path = get_attr(art, "cache-path")
+    cache_path = art.get("cache-path")
     if cache_path and CACHE_AVAILABLE:
         try:
             content = load_from_cache_text(cache_path)
@@ -1277,21 +1354,21 @@ def cmd_show_artifact(args):
             content = f"[ERROR: Cache file not found: {cache_path}]"
             storage = "cache_missing"
     else:
-        content = get_attr(art, "content")
+        content = art.get("content")
         storage = "inline"
 
     output = {
         "success": True,
         "artifact": {
-            "id": get_attr(art, "id"),
-            "name": get_attr(art, "name"),
-            "source_url": get_attr(art, "source-uri"),
-            "created_at": get_attr(art, "created-at"),
+            "id": art.get("id"),
+            "name": art.get("name"),
+            "source_url": art.get("source-uri"),
+            "created_at": art.get("created-at"),
             "content": content,
             "storage": storage,
             "cache_path": cache_path,
-            "mime_type": get_attr(art, "mime-type"),
-            "file_size": get_attr(art, "file-size"),
+            "mime_type": art.get("mime-type"),
+            "file_size": art.get("file-size"),
         },
     }
 
@@ -1305,43 +1382,46 @@ def cmd_show_artifact(args):
 
 def cmd_tag(args):
     """Tag an entity."""
+    tag_id = generate_id("tag")
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            tag_id = generate_id("tag")
-            with session.transaction(TransactionType.READ) as tx:
-                tag_check = f'match $t isa tag, has name "{args.tag}"; fetch $t: id;'
-                existing_tag = list(tx.query.fetch(tag_check))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            tag_check = f'match $t isa tag, has name "{args.tag}"; fetch {{ "id": $t.id }};'
+            existing_tag = list(tx.query(tag_check).resolve())
 
-            if not existing_tag:
-                with session.transaction(TransactionType.WRITE) as tx:
-                    tx.query.insert(f'insert $t isa tag, has id "{tag_id}", has name "{args.tag}";')
-                    tx.commit()
-
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(f'''match
-                    $e isa entity, has id "{args.entity}";
-                    $t isa tag, has name "{args.tag}";
-                insert (tagged-entity: $e, tag: $t) isa tagging;''')
+        if not existing_tag:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'insert $t isa tag, has id "{tag_id}", has name "{args.tag}";').resolve()
                 tx.commit()
+
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $e isa entity, has id "{args.entity}";
+                $t isa tag, has name "{args.tag}";
+            insert (tagged-entity: $e, tag: $t) isa tagging;''').resolve()
+            tx.commit()
 
     print(json.dumps({"success": True, "entity": args.entity, "tag": args.tag}))
 
 
 def cmd_search_tag(args):
     """Search entities by tag."""
+    query = f'''match
+        $t isa tag, has name "{args.tag}";
+        (tagged-entity: $e, tag: $t) isa tagging;
+    fetch {{
+        "id": $e.id,
+        "name": $e.name
+    }};'''
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = f'''match
-                    $t isa tag, has name "{args.tag}";
-                    (tagged-entity: $e, tag: $t) isa tagging;
-                fetch $e: id, name;'''
-                results = list(tx.query.fetch(query))
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            results = list(tx.query(query).resolve())
 
     print(json.dumps({
         "success": True,
         "tag": args.tag,
-        "entities": [r["e"] for r in results],
+        "entities": results,
         "count": len(results),
     }, indent=2, default=str))
 

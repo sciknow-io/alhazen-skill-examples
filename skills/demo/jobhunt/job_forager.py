@@ -95,13 +95,13 @@ except ImportError:
     )
 
 try:
-    from typedb.driver import SessionType, TransactionType, TypeDB
+    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
 
     TYPEDB_AVAILABLE = True
 except ImportError:
     TYPEDB_AVAILABLE = False
     print(
-        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=2.25.0,<3.0.0'",
+        "Warning: typedb-driver not installed. Install with: pip install 'typedb-driver>=3.0.0'",
         file=sys.stderr,
     )
 
@@ -109,6 +109,8 @@ except ImportError:
 TYPEDB_HOST = os.getenv("TYPEDB_HOST", "localhost")
 TYPEDB_PORT = int(os.getenv("TYPEDB_PORT", "1729"))
 TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "alhazen_notebook")
+TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
+TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 
 # API endpoints — company boards
 GREENHOUSE_API = "https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs"
@@ -168,7 +170,11 @@ REQUEST_TIMEOUT = 30
 
 def get_driver():
     """Get TypeDB driver connection."""
-    return TypeDB.core_driver(f"{TYPEDB_HOST}:{TYPEDB_PORT}")
+    return TypeDB.driver(
+        f"{TYPEDB_HOST}:{TYPEDB_PORT}",
+        Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD),
+        DriverOptions(is_tls_enabled=False),
+    )
 
 
 def generate_id(prefix: str) -> str:
@@ -184,11 +190,11 @@ def escape_string(s: str) -> str:
 
 
 def get_attr(entity: dict, attr_name: str, default=None):
-    """Safely extract attribute value from TypeDB fetch result."""
-    attr_list = entity.get(attr_name, [])
-    if attr_list and len(attr_list) > 0:
-        return attr_list[0].get("value", default)
-    return default
+    """Safely extract attribute value from TypeDB 3.x fetch result (plain Python dicts)."""
+    val = entity.get(attr_name, default)
+    if isinstance(val, list) and val:
+        return val[0] if val[0] is not None else default
+    return val if val is not None else default
 
 
 def get_timestamp() -> str:
@@ -615,15 +621,14 @@ def load_position_titles() -> list[str]:
     """Load position titles from TypeDB for search term extraction."""
     titles = []
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match $p isa jobhunt-position;
-                    fetch $p: name;"""
-                results = list(tx.query.fetch(query))
-                for r in results:
-                    name = get_attr(r["p"], "name")
-                    if name:
-                        titles.append(name)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match $p isa jobhunt-position;
+                fetch { "name": $p.name };"""
+            results = list(tx.query(query).resolve())
+            for r in results:
+                name = r.get("name")
+                if name:
+                    titles.append(name)
     return titles
 
 
@@ -809,16 +814,15 @@ def load_user_skills() -> list[dict]:
     """Load your-skill entities from TypeDB."""
     skills = []
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match $s isa your-skill;
-                    fetch $s: skill-name, skill-level;"""
-                results = list(tx.query.fetch(query))
-                for r in results:
-                    skills.append({
-                        "name": get_attr(r["s"], "skill-name", ""),
-                        "level": get_attr(r["s"], "skill-level", "none"),
-                    })
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match $s isa your-skill;
+                fetch { "skill-name": $s.skill-name, "skill-level": $s.skill-level };"""
+            results = list(tx.query(query).resolve())
+            for r in results:
+                skills.append({
+                    "name": r.get("skill-name", ""),
+                    "level": r.get("skill-level", "none"),
+                })
     return skills
 
 
@@ -944,15 +948,14 @@ def load_existing_position_urls() -> set[str]:
     """Load all job-url values from existing jobhunt-position entities."""
     urls = set()
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match $p isa jobhunt-position, has job-url $url;
-                    fetch $p: job-url;"""
-                results = list(tx.query.fetch(query))
-                for r in results:
-                    url = get_attr(r["p"], "job-url")
-                    if url:
-                        urls.add(url)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match $p isa jobhunt-position, has job-url $url;
+                fetch { "job-url": $p.job-url };"""
+            results = list(tx.query(query).resolve())
+            for r in results:
+                url = r.get("job-url")
+                if url:
+                    urls.add(url)
     return urls
 
 
@@ -960,15 +963,14 @@ def load_existing_candidate_ext_ids() -> set[str]:
     """Load all external-job-id values from existing candidates."""
     ext_ids = set()
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match $c isa jobhunt-candidate, has external-job-id $eid;
-                    fetch $c: external-job-id;"""
-                results = list(tx.query.fetch(query))
-                for r in results:
-                    eid = get_attr(r["c"], "external-job-id")
-                    if eid:
-                        ext_ids.add(eid)
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match $c isa jobhunt-candidate, has external-job-id $eid;
+                fetch { "external-job-id": $c.external-job-id };"""
+            results = list(tx.query(query).resolve())
+            for r in results:
+                eid = r.get("external-job-id")
+                if eid:
+                    ext_ids.add(eid)
     return ext_ids
 
 
@@ -993,22 +995,28 @@ def load_search_sources() -> list[dict]:
     """Load all jobhunt-search-source entities."""
     sources = []
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match $s isa jobhunt-search-source;
-                    fetch $s: id, name, board-token, board-platform, company-url,
-                        search-query, search-location;"""
-                results = list(tx.query.fetch(query))
-                for r in results:
-                    sources.append({
-                        "id": get_attr(r["s"], "id"),
-                        "name": get_attr(r["s"], "name"),
-                        "board_token": get_attr(r["s"], "board-token"),
-                        "platform": get_attr(r["s"], "board-platform"),
-                        "company_url": get_attr(r["s"], "company-url"),
-                        "search_query": get_attr(r["s"], "search-query"),
-                        "search_location": get_attr(r["s"], "search-location"),
-                    })
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match $s isa jobhunt-search-source;
+                fetch {
+                    "id": $s.id,
+                    "name": $s.name,
+                    "board-token": $s.board-token,
+                    "board-platform": $s.board-platform,
+                    "company-url": $s.company-url,
+                    "search-query": $s.search-query,
+                    "search-location": $s.search-location
+                };"""
+            results = list(tx.query(query).resolve())
+            for r in results:
+                sources.append({
+                    "id": r.get("id"),
+                    "name": r.get("name"),
+                    "board_token": r.get("board-token"),
+                    "platform": r.get("board-platform"),
+                    "company_url": r.get("company-url"),
+                    "search_query": r.get("search-query"),
+                    "search_location": r.get("search-location"),
+                })
     return sources
 
 
@@ -1019,53 +1027,52 @@ def store_candidates(candidates: list[dict], source_id: str,
     timestamp = get_timestamp()
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            for c in candidates:
-                candidate_id = generate_id("candidate")
+        for c in candidates:
+            candidate_id = generate_id("candidate")
 
-                # Truncate snippet for storage
-                snippet = c.get("content_snippet", "")[:500]
+            # Truncate snippet for storage
+            snippet = c.get("content_snippet", "")[:500]
 
-                # Normalize title to "Role @ Company" format
-                title = c['title']
-                if ' @ ' not in title and source_name:
-                    title = f"{title} @ {source_name}"
+            # Normalize title to "Role @ Company" format
+            title = c['title']
+            if ' @ ' not in title and source_name:
+                title = f"{title} @ {source_name}"
 
-                insert_query = f'''insert $c isa jobhunt-candidate,
-                    has id "{candidate_id}",
-                    has name "{escape_string(title)}",
-                    has job-url "{escape_string(c['url'])}",
-                    has external-job-id "{escape_string(c['external_id'])}",
-                    has candidate-status "new",
-                    has relevance-score {c.get('relevance', 0.0)},
-                    has discovered-at {timestamp},
-                    has created-at {timestamp}'''
+            insert_query = f'''insert $c isa jobhunt-candidate,
+                has id "{candidate_id}",
+                has name "{escape_string(title)}",
+                has job-url "{escape_string(c['url'])}",
+                has external-job-id "{escape_string(c['external_id'])}",
+                has candidate-status "new",
+                has relevance-score {c.get('relevance', 0.0)},
+                has discovered-at {timestamp},
+                has created-at {timestamp}'''
 
-                if c.get("location"):
-                    insert_query += f', has location "{escape_string(c["location"])}"'
-                if snippet:
-                    insert_query += f', has description "{escape_string(snippet)}"'
+            if c.get("location"):
+                insert_query += f', has location "{escape_string(c["location"])}"'
+            if snippet:
+                insert_query += f', has description "{escape_string(snippet)}"'
 
-                insert_query += ";"
+            insert_query += ";"
 
-                try:
-                    with session.transaction(TransactionType.WRITE) as tx:
-                        tx.query.insert(insert_query)
-                        tx.commit()
+            try:
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                    tx.query(insert_query).resolve()
+                    tx.commit()
 
-                    # Link to source
-                    with session.transaction(TransactionType.WRITE) as tx:
-                        rel_query = f'''match
-                            $s isa jobhunt-search-source, has id "{source_id}";
-                            $c isa jobhunt-candidate, has id "{candidate_id}";
-                        insert (source: $s, candidate: $c) isa source-provides;'''
-                        tx.query.insert(rel_query)
-                        tx.commit()
+                # Link to source
+                with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                    rel_query = f'''match
+                        $s isa jobhunt-search-source, has id "{source_id}";
+                        $c isa jobhunt-candidate, has id "{candidate_id}";
+                    insert (source: $s, candidate: $c) isa source-provides;'''
+                    tx.query(rel_query).resolve()
+                    tx.commit()
 
-                    c["candidate_id"] = candidate_id
-                    stored.append(c)
-                except Exception as e:
-                    print(f"  Error storing candidate '{c['title']}': {e}", file=sys.stderr)
+                c["candidate_id"] = candidate_id
+                stored.append(c)
+            except Exception as e:
+                print(f"  Error storing candidate '{c['title']}': {e}", file=sys.stderr)
 
     return stored
 
@@ -1203,10 +1210,9 @@ def cmd_add_source(args):
     insert_query += ";"
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(insert_query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(insert_query).resolve()
+            tx.commit()
 
     result = {
         "success": True,
@@ -1236,47 +1242,46 @@ def cmd_list_sources(args):
 
 def cmd_remove_source(args):
     """Remove a search source by id or token."""
+    # Find the source
+    if args.id:
+        match_clause = f'$s isa jobhunt-search-source, has id "{args.id}"'
+    elif args.token:
+        match_clause = f'$s isa jobhunt-search-source, has board-token "{escape_string(args.token)}"'
+    elif args.name:
+        match_clause = f'$s isa jobhunt-search-source, has name "{escape_string(args.name)}"'
+    else:
+        print(json.dumps({"success": False, "error": "Must provide --id, --token, or --name"}))
+        return
+
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Find the source
-            if args.id:
-                match_clause = f'$s isa jobhunt-search-source, has id "{args.id}"'
-            elif args.token:
-                match_clause = f'$s isa jobhunt-search-source, has board-token "{escape_string(args.token)}"'
-            elif args.name:
-                match_clause = f'$s isa jobhunt-search-source, has name "{escape_string(args.name)}"'
-            else:
-                print(json.dumps({"success": False, "error": "Must provide --id, --token, or --name"}))
-                return
+        # Check existence
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            check = f'match {match_clause}; fetch {{ "id": $s.id, "name": $s.name }};'
+            existing = list(tx.query(check).resolve())
 
-            # Check existence
-            with session.transaction(TransactionType.READ) as tx:
-                check = f'match {match_clause}; fetch $s: id, name;'
-                existing = list(tx.query.fetch(check))
+        if not existing:
+            print(json.dumps({"success": False, "error": "Source not found"}))
+            return
 
-            if not existing:
-                print(json.dumps({"success": False, "error": "Source not found"}))
-                return
+        source_name = existing[0].get("name")
+        source_id = existing[0].get("id")
 
-            source_name = get_attr(existing[0]["s"], "name")
-            source_id = get_attr(existing[0]["s"], "id")
-
-            # Delete any source-provides relations first
-            with session.transaction(TransactionType.WRITE) as tx:
-                try:
-                    del_rel = f'''match
-                        $s isa jobhunt-search-source, has id "{source_id}";
-                        $r (source: $s, candidate: $c) isa source-provides;
-                    delete $r isa source-provides;'''
-                    tx.query.delete(del_rel)
-                    tx.commit()
-                except Exception:
-                    pass  # No relations to delete
-
-            # Delete the source
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.delete(f'match {match_clause}; delete $s isa jobhunt-search-source;')
+        # Delete any source-provides relations first
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            try:
+                del_rel = f'''match
+                    $s isa jobhunt-search-source, has id "{source_id}";
+                    $r (source: $s, candidate: $c) isa source-provides;
+                delete $r isa source-provides;'''
+                tx.query(del_rel).resolve()
                 tx.commit()
+            except Exception:
+                pass  # No relations to delete
+
+        # Delete the source
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'match {match_clause}; delete $s isa jobhunt-search-source;').resolve()
+            tx.commit()
 
     print(json.dumps({
         "success": True,
@@ -1290,37 +1295,36 @@ def cmd_suggest_sources(args):
     suggestions = []
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Get existing companies from positions
-            with session.transaction(TransactionType.READ) as tx:
-                query = """match
-                    $p isa jobhunt-position, has job-url $url;
-                    fetch $p: name, job-url;"""
-                results = list(tx.query.fetch(query))
+        # Get existing companies from positions
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = """match
+                $p isa jobhunt-position, has job-url $url;
+                fetch { "name": $p.name, "job-url": $p.job-url };"""
+            results = list(tx.query(query).resolve())
 
-            # Get existing search sources to exclude
-            with session.transaction(TransactionType.READ) as tx:
-                src_query = """match $s isa jobhunt-search-source;
-                    fetch $s: board-token, board-platform;"""
-                existing_sources = list(tx.query.fetch(src_query))
+        # Get existing search sources to exclude
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            src_query = """match $s isa jobhunt-search-source;
+                fetch { "board-token": $s.board-token, "board-platform": $s.board-platform };"""
+            existing_sources = list(tx.query(src_query).resolve())
 
-            # Get user skills
-            with session.transaction(TransactionType.READ) as tx:
-                skill_query = """match $s isa your-skill;
-                    fetch $s: skill-name, skill-level;"""
-                skill_results = list(tx.query.fetch(skill_query))
+        # Get user skills
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            skill_query = """match $s isa your-skill;
+                fetch { "skill-name": $s.skill-name, "skill-level": $s.skill-level };"""
+            skill_results = list(tx.query(skill_query).resolve())
 
     existing_tokens = set()
     for s in existing_sources:
-        token = get_attr(s["s"], "board-token")
+        token = s.get("board-token")
         if token:
             existing_tokens.add(token.lower())
 
     # Extract company slugs from position URLs
     seen_companies = set()
     for r in results:
-        url = get_attr(r["p"], "job-url", "")
-        name = get_attr(r["p"], "name", "")
+        url = r.get("job-url", "") or ""
+        name = r.get("name", "") or ""
 
         # Try to detect platform and slug from URL
         if "greenhouse.io" in url:
@@ -1354,8 +1358,8 @@ def cmd_suggest_sources(args):
     skills = []
     for r in skill_results:
         skills.append({
-            "name": get_attr(r["s"], "skill-name"),
-            "level": get_attr(r["s"], "skill-level"),
+            "name": r.get("skill-name"),
+            "level": r.get("skill-level"),
         })
 
     print(json.dumps({
@@ -1554,41 +1558,49 @@ def cmd_heartbeat(args):
 def cmd_list_candidates(args):
     """List discovered candidates, optionally filtered."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            with session.transaction(TransactionType.READ) as tx:
-                query = "match $c isa jobhunt-candidate"
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = "match $c isa jobhunt-candidate"
 
-                if args.status:
-                    query += f', has candidate-status "{args.status}"'
+            if args.status:
+                query += f', has candidate-status "{args.status}"'
 
-                query += """;
-                    fetch $c: id, name, job-url, location, relevance-score,
-                        candidate-status, external-job-id, discovered-at, triage-reason;"""
+            query += """;
+                fetch {
+                    "id": $c.id,
+                    "name": $c.name,
+                    "job-url": $c.job-url,
+                    "location": $c.location,
+                    "relevance-score": $c.relevance-score,
+                    "candidate-status": $c.candidate-status,
+                    "external-job-id": $c.external-job-id,
+                    "discovered-at": $c.discovered-at,
+                    "triage-reason": $c.triage-reason
+                };"""
 
-                results = list(tx.query.fetch(query))
+            results = list(tx.query(query).resolve())
 
-                # If filtering by source, get source links
-                if args.source:
-                    src_query = f'''match
-                        $s isa jobhunt-search-source, has board-token "{escape_string(args.source)}";
-                        (source: $s, candidate: $c) isa source-provides;
-                    fetch $c: id;'''
-                    src_results = list(tx.query.fetch(src_query))
-                    source_ids = {get_attr(r["c"], "id") for r in src_results}
-                    results = [r for r in results if get_attr(r["c"], "id") in source_ids]
+            # If filtering by source, get source links
+            if args.source:
+                src_query = f'''match
+                    $s isa jobhunt-search-source, has board-token "{escape_string(args.source)}";
+                    (source: $s, candidate: $c) isa source-provides;
+                fetch {{ "id": $c.id }};'''
+                src_results = list(tx.query(src_query).resolve())
+                source_ids = {r.get("id") for r in src_results}
+                results = [r for r in results if r.get("id") in source_ids]
 
     candidates = []
     for r in results:
         candidates.append({
-            "id": get_attr(r["c"], "id"),
-            "title": get_attr(r["c"], "name"),
-            "url": get_attr(r["c"], "job-url"),
-            "location": get_attr(r["c"], "location"),
-            "relevance": get_attr(r["c"], "relevance-score"),
-            "status": get_attr(r["c"], "candidate-status"),
-            "external_id": get_attr(r["c"], "external-job-id"),
-            "discovered_at": get_attr(r["c"], "discovered-at"),
-            "triage_reason": get_attr(r["c"], "triage-reason"),
+            "id": r.get("id"),
+            "title": r.get("name"),
+            "url": r.get("job-url"),
+            "location": r.get("location"),
+            "relevance": r.get("relevance-score"),
+            "status": r.get("candidate-status"),
+            "external_id": r.get("external-job-id"),
+            "discovered_at": r.get("discovered-at"),
+            "triage_reason": r.get("triage-reason"),
         })
 
     # Sort by relevance descending
@@ -1620,31 +1632,30 @@ def cmd_triage(args):
         return
 
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Check existence
-            with session.transaction(TransactionType.READ) as tx:
-                check = f'''match $c isa jobhunt-candidate, has id "{args.id}";
-                    fetch $c: id, name, candidate-status;'''
-                existing = list(tx.query.fetch(check))
+        # Check existence
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            check = f'''match $c isa jobhunt-candidate, has id "{args.id}";
+                fetch {{ "id": $c.id, "name": $c.name, "candidate-status": $c.candidate-status }};'''
+            existing = list(tx.query(check).resolve())
 
-            if not existing:
-                print(json.dumps({"success": False, "error": "Candidate not found"}))
-                return
+        if not existing:
+            print(json.dumps({"success": False, "error": "Candidate not found"}))
+            return
 
-            # Delete old status, add new one
-            with session.transaction(TransactionType.WRITE) as tx:
-                update_query = f'''match
-                    $c isa jobhunt-candidate, has id "{args.id}", has candidate-status $old;
-                delete $c has $old;'''
-                tx.query.delete(update_query)
-                tx.commit()
+        # Delete old status, add new one
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            update_query = f'''match
+                $c isa jobhunt-candidate, has id "{args.id}", has candidate-status $old;
+            delete $c has $old;'''
+            tx.query(update_query).resolve()
+            tx.commit()
 
-            with session.transaction(TransactionType.WRITE) as tx:
-                insert_query = f'''match
-                    $c isa jobhunt-candidate, has id "{args.id}";
-                insert $c has candidate-status "{args.action}";'''
-                tx.query.insert(insert_query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            insert_query = f'''match
+                $c isa jobhunt-candidate, has id "{args.id}";
+            insert $c has candidate-status "{args.action}";'''
+            tx.query(insert_query).resolve()
+            tx.commit()
 
     print(json.dumps({
         "success": True,
@@ -1656,73 +1667,78 @@ def cmd_triage(args):
 def cmd_promote(args):
     """Promote a candidate to a full jobhunt-position."""
     with get_driver() as driver:
-        with driver.session(TYPEDB_DATABASE, SessionType.DATA) as session:
-            # Load candidate
-            with session.transaction(TransactionType.READ) as tx:
-                query = f'''match $c isa jobhunt-candidate, has id "{args.id}";
-                    fetch $c: id, name, job-url, location, candidate-status;'''
-                results = list(tx.query.fetch(query))
+        # Load candidate
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            query = f'''match $c isa jobhunt-candidate, has id "{args.id}";
+                fetch {{
+                    "id": $c.id,
+                    "name": $c.name,
+                    "job-url": $c.job-url,
+                    "location": $c.location,
+                    "candidate-status": $c.candidate-status
+                }};'''
+            results = list(tx.query(query).resolve())
 
-            if not results:
-                print(json.dumps({"success": False, "error": "Candidate not found"}))
-                return
+        if not results:
+            print(json.dumps({"success": False, "error": "Candidate not found"}))
+            return
 
-            candidate = results[0]["c"]
-            title = get_attr(candidate, "name", "Untitled")
-            url = get_attr(candidate, "job-url", "")
-            location = get_attr(candidate, "location")
+        candidate = results[0]
+        title = candidate.get("name") or "Untitled"
+        url = candidate.get("job-url") or ""
+        location = candidate.get("location") or ""
 
-            # Create position
-            position_id = generate_id("position")
-            timestamp = get_timestamp()
+        # Create position
+        position_id = generate_id("position")
+        timestamp = get_timestamp()
 
-            pos_query = f'''insert $p isa jobhunt-position,
-                has id "{position_id}",
-                has name "{escape_string(title)}",
-                has created-at {timestamp}'''
+        pos_query = f'''insert $p isa jobhunt-position,
+            has id "{position_id}",
+            has name "{escape_string(title)}",
+            has created-at {timestamp}'''
 
-            if url:
-                pos_query += f', has job-url "{escape_string(url)}"'
-            if location:
-                pos_query += f', has location "{escape_string(location)}"'
+        if url:
+            pos_query += f', has job-url "{escape_string(url)}"'
+        if location:
+            pos_query += f', has location "{escape_string(location)}"'
 
-            pos_query += ";"
+        pos_query += ";"
 
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(pos_query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(pos_query).resolve()
+            tx.commit()
 
-            # Create initial application note
-            note_id = generate_id("note")
-            with session.transaction(TransactionType.WRITE) as tx:
-                note_query = f'''insert $n isa jobhunt-application-note,
-                    has id "{note_id}",
-                    has name "Application Status",
-                    has application-status "researching",
-                    has created-at {timestamp};'''
-                tx.query.insert(note_query)
-                tx.commit()
+        # Create initial application note
+        note_id = generate_id("note")
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            note_query = f'''insert $n isa jobhunt-application-note,
+                has id "{note_id}",
+                has name "Application Status",
+                has application-status "researching",
+                has created-at {timestamp};'''
+            tx.query(note_query).resolve()
+            tx.commit()
 
-            with session.transaction(TransactionType.WRITE) as tx:
-                about_query = f'''match
-                    $n isa note, has id "{note_id}";
-                    $p isa jobhunt-position, has id "{position_id}";
-                insert (note: $n, subject: $p) isa aboutness;'''
-                tx.query.insert(about_query)
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            about_query = f'''match
+                $n isa note, has id "{note_id}";
+                $p isa jobhunt-position, has id "{position_id}";
+            insert (note: $n, subject: $p) isa aboutness;'''
+            tx.query(about_query).resolve()
+            tx.commit()
 
-            # Update candidate status to "promoted"
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.delete(f'''match
-                    $c isa jobhunt-candidate, has id "{args.id}", has candidate-status $old;
-                delete $c has $old;''')
-                tx.commit()
+        # Update candidate status to "promoted"
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $c isa jobhunt-candidate, has id "{args.id}", has candidate-status $old;
+            delete $c has $old;''').resolve()
+            tx.commit()
 
-            with session.transaction(TransactionType.WRITE) as tx:
-                tx.query.insert(f'''match
-                    $c isa jobhunt-candidate, has id "{args.id}";
-                insert $c has candidate-status "promoted";''')
-                tx.commit()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(f'''match
+                $c isa jobhunt-candidate, has id "{args.id}";
+            insert $c has candidate-status "promoted";''').resolve()
+            tx.commit()
 
     print(json.dumps({
         "success": True,
