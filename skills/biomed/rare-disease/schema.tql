@@ -1,0 +1,378 @@
+# =============================================================================
+# RARE DISEASE INVESTIGATION - TypeDB 3.x Schema Extension
+# =============================================================================
+# Disease-centric investigation starting from a MONDO ID.
+# Pulls curated phenotypes, causal genes, similar diseases, clinical trials,
+# and drug candidates from Monarch Initiative + ClinicalTrials.gov + ChEMBL.
+#
+# Unlike APM (patient-case → diagnosis), this skill starts from a known
+# MONDO ID and builds a 360° knowledge graph:
+#   - Phenome (HPO associations)
+#   - Causal genes (Monarch causal/correlated gene associations)
+#   - Disease hierarchy (MONDO subclass-of)
+#   - Similar diseases (Monarch SemSim)
+#   - Therapeutic landscape (ChEMBL drug targets + clinical trials)
+#   - Research landscape (expert groups, models, biomarkers)
+#
+# Namespace prefix: rd-*
+# =============================================================================
+
+define
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Disease Identifiers
+# -----------------------------------------------------------------------------
+
+attribute rd-mondo-id, value string;          # "MONDO:0800044"
+attribute rd-omim-id, value string;           # "OMIM:615273"
+attribute rd-orpha-id, value string;          # "Orphanet:404454"
+attribute rd-gard-id, value string;           # "GARD:12717"
+attribute rd-doid-id, value string;           # "DOID:0060388"
+attribute rd-ncit-id, value string;           # "NCIT:C116884"
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Phenotype / HPO
+# -----------------------------------------------------------------------------
+
+attribute rd-hpo-id, value string;            # "HP:0001250"
+attribute rd-hpo-label, value string;         # "Seizures"
+attribute rd-frequency-qualifier, value string; # obligate, very-frequent, frequent, occasional, rare, very-rare
+attribute rd-evidence-code, value string;     # "ECO:0000269"
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Gene / Protein
+# -----------------------------------------------------------------------------
+
+attribute rd-gene-symbol, value string;       # "NGLY1"
+attribute rd-hgnc-id, value string;           # "HGNC:17646"
+attribute rd-ensembl-id, value string;        # "ENSG00000151694"
+attribute rd-entrez-id, value string;         # "55768"
+attribute rd-uniprot-id, value string;        # "Q96IV0"
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Disease Properties
+# -----------------------------------------------------------------------------
+
+attribute rd-inheritance-pattern, value string; # autosomal-recessive, autosomal-dominant, X-linked, de-novo
+attribute rd-prevalence, value string;         # e.g., "< 1 / 1 000 000"
+attribute rd-age-of-onset, value string;       # infantile, neonatal, childhood, adult
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Association / Relationship
+# -----------------------------------------------------------------------------
+
+attribute rd-association-type, value string;  # causal, correlated, biomarker, risk-factor
+attribute rd-similarity-score, value double;  # 0.0-1.0
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Mechanism (APM 4-category model)
+# -----------------------------------------------------------------------------
+
+attribute rd-mechanism-type, value string;    # gain-of-function, partial-loss, total-loss, dominant-negative, toxification
+attribute rd-functional-impact, value string; # overactivity, underactivity, absence, toxicity
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Drug / Therapy
+# -----------------------------------------------------------------------------
+
+attribute rd-drugbank-id, value string;       # "DB00619"
+attribute rd-chembl-id, value string;         # "CHEMBL1421"
+attribute rd-drug-class, value string;        # "small-molecule", "biologic", "gene-therapy", "antisense"
+attribute rd-mechanism-of-action, value string; # "enzyme-replacement", "read-through", "inhibitor"
+attribute rd-development-stage, value string; # preclinical, phase-1, phase-2, phase-3, approved, off-label
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Clinical Trials
+# -----------------------------------------------------------------------------
+
+attribute rd-nct-id, value string;            # "NCT04047
+attribute rd-trial-phase, value string;       # 1, 2, 3, 4, N/A
+attribute rd-trial-status, value string;      # Recruiting, Active, Completed, etc.
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Model Systems
+# -----------------------------------------------------------------------------
+
+attribute rd-model-type, value string;        # patient-fibroblast, iPSC, mouse, zebrafish, fly, yeast
+attribute rd-model-species, value string;
+
+# -----------------------------------------------------------------------------
+# ATTRIBUTE TYPES - Other
+# -----------------------------------------------------------------------------
+
+attribute rd-biomarker-type, value string;    # biochemical, imaging, functional, genetic
+attribute rd-investigation-status, value string; # active, archived, complete
+
+
+# -----------------------------------------------------------------------------
+# COLLECTION TYPES
+# -----------------------------------------------------------------------------
+
+# RD-INVESTIGATION - An active rare disease investigation (organizes all related entities)
+entity rd-investigation sub collection,
+    owns rd-investigation-status;
+
+# RD-PATIENT-COHORT - A set of patients sharing phenotype, genotype, or diagnostic criteria
+entity rd-patient-cohort sub collection;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Things (sub domain-thing)
+# -----------------------------------------------------------------------------
+
+# RD-DISEASE - A disease or condition identified by MONDO ID
+entity rd-disease sub domain-thing,
+    owns rd-mondo-id,
+    owns rd-omim-id,
+    owns rd-orpha-id,
+    owns rd-gard-id,
+    owns rd-doid-id,
+    owns rd-ncit-id,
+    owns rd-inheritance-pattern,
+    owns rd-prevalence,
+    owns rd-age-of-onset,
+    plays rd-disease-has-phenotype:disease,
+    plays rd-gene-causes-disease:disease,
+    plays rd-gene-associated-with:disease,
+    plays rd-disease-subclass-of:child-disease,
+    plays rd-disease-subclass-of:parent-disease,
+    plays rd-disease-similar-to:disease-a,
+    plays rd-disease-similar-to:disease-b,
+    plays rd-drug-indicated-for:indication,
+    plays rd-trial-studies:disease,
+    plays rd-biomarker-for:disease,
+    plays rd-model-recapitulates:disease,
+    plays rd-research-group-focuses-on:disease;
+
+# RD-GENE - A gene implicated in the disease (causal or associated)
+entity rd-gene sub domain-thing,
+    owns rd-gene-symbol,
+    owns rd-hgnc-id,
+    owns rd-ensembl-id,
+    owns rd-entrez-id,
+    plays rd-gene-causes-disease:gene,
+    plays rd-gene-associated-with:gene,
+    plays rd-drug-targets:target-gene;
+
+# RD-PROTEIN - Protein product of a gene
+entity rd-protein sub domain-thing,
+    owns rd-uniprot-id,
+    plays rd-drug-targets:target-protein;
+
+# RD-PATHWAY - A biological pathway implicated in disease mechanism
+entity rd-pathway sub domain-thing;
+
+# RD-PHENOTYPE - A clinical phenotype feature (canonical HPO concept)
+entity rd-phenotype sub domain-thing,
+    owns rd-hpo-id,
+    owns rd-hpo-label,
+    plays rd-disease-has-phenotype:phenotype;
+
+# RD-DRUG - A therapeutic compound (approved, investigational, or repurposed)
+entity rd-drug sub domain-thing,
+    owns rd-drugbank-id,
+    owns rd-chembl-id,
+    owns rd-drug-class,
+    owns rd-mechanism-of-action,
+    owns rd-development-stage,
+    plays rd-drug-targets:drug,
+    plays rd-drug-indicated-for:drug;
+
+# RD-CLINICAL-TRIAL - A clinical trial studying the disease
+entity rd-clinical-trial sub domain-thing,
+    owns rd-nct-id,
+    owns rd-trial-phase,
+    owns rd-trial-status,
+    plays rd-trial-studies:trial;
+
+# RD-RESEARCH-GROUP - A lab or group with expertise in this disease
+entity rd-research-group sub domain-thing,
+    plays rd-research-group-focuses-on:research-group;
+
+# RD-DISEASE-MODEL - An experimental model system (mouse, zebrafish, fly, iPSC)
+entity rd-disease-model sub domain-thing,
+    owns rd-model-type,
+    owns rd-model-species,
+    plays rd-model-recapitulates:model;
+
+# RD-BIOMARKER - A measurable indicator of disease state
+entity rd-biomarker sub domain-thing,
+    owns rd-biomarker-type,
+    plays rd-biomarker-for:biomarker;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Artifacts (sub artifact)
+# -----------------------------------------------------------------------------
+
+# RD-MONDO-RECORD - Raw MONDO/Monarch entity JSON (from init-disease)
+entity rd-mondo-record sub artifact,
+    owns rd-mondo-id;
+
+# RD-MONARCH-ASSOC-RECORD - Raw Monarch association batch (phenotypes, genes)
+entity rd-monarch-assoc-record sub artifact;
+
+# RD-OMIM-RECORD - OMIM gene/disease entry
+entity rd-omim-record sub artifact,
+    owns rd-omim-id;
+
+# RD-ORPHANET-RECORD - Orphanet disease record
+entity rd-orphanet-record sub artifact,
+    owns rd-orpha-id;
+
+# RD-CLINTRIALS-RECORD - ClinicalTrials.gov search results
+entity rd-clintrials-record sub artifact,
+    owns rd-nct-id;
+
+# RD-CHEMBL-RECORD - ChEMBL target/mechanism data
+entity rd-chembl-record sub artifact,
+    owns rd-chembl-id;
+
+# RD-GNOMAD-RECORD - gnomAD population genetics data for disease genes
+entity rd-gnomad-record sub artifact;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Fragments (sub fragment)
+# -----------------------------------------------------------------------------
+
+# RD-PHENOTYPE-ENTRY - HPO phenotype entry extracted from a monarch assoc record
+entity rd-phenotype-entry sub fragment,
+    owns rd-hpo-id,
+    owns rd-hpo-label,
+    owns rd-frequency-qualifier,
+    owns rd-evidence-code;
+
+# RD-MECHANISM-CLAIM - Mechanism claim extracted from literature or databases
+entity rd-mechanism-claim sub fragment,
+    owns rd-mechanism-type,
+    owns rd-functional-impact,
+    owns confidence;
+
+# RD-DRUG-INTERACTION - Drug-gene interaction extracted from ChEMBL
+entity rd-drug-interaction sub fragment,
+    owns rd-mechanism-of-action;
+
+# RD-EXPERT-MENTION - Expert researcher mentioned in a paper or report
+entity rd-expert-mention sub fragment;
+
+# RD-NATURAL-HISTORY-DATUM - A natural history data point (onset, progression, survival)
+entity rd-natural-history-datum sub fragment;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Notes (sub note)
+# -----------------------------------------------------------------------------
+
+# RD-DISEASE-OVERVIEW-NOTE - High-level disease summary
+entity rd-disease-overview-note sub note;
+
+# RD-MECHANISM-NOTE - Mechanistic analysis (APM-compatible: 4-category model)
+entity rd-mechanism-note sub note,
+    owns rd-mechanism-type,
+    owns rd-functional-impact;
+
+# RD-PHENOTYPIC-SPECTRUM-NOTE - Analysis of phenotype variability
+entity rd-phenotypic-spectrum-note sub note;
+
+# RD-DIAGNOSTIC-CRITERIA-NOTE - Diagnostic criteria synthesis
+entity rd-diagnostic-criteria-note sub note;
+
+# RD-DIFFERENTIAL-NOTE - Differential diagnosis analysis
+entity rd-differential-note sub note;
+
+# RD-THERAPEUTIC-LANDSCAPE-NOTE - Drug and clinical trial landscape
+entity rd-therapeutic-landscape-note sub note;
+
+# RD-EXPERT-LANDSCAPE-NOTE - Who is working on this disease
+entity rd-expert-landscape-note sub note;
+
+# RD-RESEARCH-GAPS-NOTE - Open questions and research priorities
+entity rd-research-gaps-note sub note;
+
+# RD-NATURAL-HISTORY-NOTE - Disease progression, prognosis, survival
+entity rd-natural-history-note sub note;
+
+
+# -----------------------------------------------------------------------------
+# RELATION TYPES
+# -----------------------------------------------------------------------------
+
+# RD-DISEASE-HAS-PHENOTYPE - Disease presents with HPO phenotype
+relation rd-disease-has-phenotype sub relation,
+    owns rd-frequency-qualifier,
+    owns rd-evidence-code,
+    owns provenance,
+    relates disease,
+    relates phenotype;
+
+# RD-GENE-CAUSES-DISEASE - Gene is causally implicated in disease
+relation rd-gene-causes-disease sub relation,
+    owns confidence,
+    owns provenance,
+    relates gene,
+    relates disease;
+
+# RD-GENE-ASSOCIATED-WITH - Gene is associated with disease (non-causal or unresolved)
+relation rd-gene-associated-with sub relation,
+    owns rd-association-type,
+    owns confidence,
+    owns provenance,
+    relates gene,
+    relates disease;
+
+# RD-DISEASE-SUBCLASS-OF - MONDO subclass hierarchy
+relation rd-disease-subclass-of sub relation,
+    relates child-disease,
+    relates parent-disease;
+
+# RD-DISEASE-SIMILAR-TO - Phenotypically similar diseases (from SemSim)
+relation rd-disease-similar-to sub relation,
+    owns rd-similarity-score,
+    relates disease-a,
+    relates disease-b;
+
+# RD-DRUG-TARGETS - Drug acts on gene/protein target
+relation rd-drug-targets sub relation,
+    owns rd-mechanism-of-action,
+    owns confidence,
+    owns provenance,
+    relates drug,
+    relates target-gene,
+    relates target-protein;
+
+# RD-DRUG-INDICATED-FOR - Drug has indication for this disease
+relation rd-drug-indicated-for sub relation,
+    owns rd-development-stage,
+    owns confidence,
+    owns provenance,
+    relates drug,
+    relates indication;
+
+# RD-TRIAL-STUDIES - Clinical trial studies disease
+relation rd-trial-studies sub relation,
+    relates trial,
+    relates disease;
+
+# RD-BIOMARKER-FOR - Biomarker is informative for disease
+relation rd-biomarker-for sub relation,
+    owns rd-biomarker-type,
+    relates biomarker,
+    relates disease;
+
+# RD-MODEL-RECAPITULATES - Disease model recapitulates disease phenotype
+relation rd-model-recapitulates sub relation,
+    owns confidence,
+    owns provenance,
+    relates model,
+    relates disease;
+
+# RD-RESEARCH-GROUP-FOCUSES-ON - Research group works on this disease
+relation rd-research-group-focuses-on sub relation,
+    relates research-group,
+    relates disease;
+
+
+# =============================================================================
+# END RARE DISEASE NAMESPACE
+# =============================================================================
