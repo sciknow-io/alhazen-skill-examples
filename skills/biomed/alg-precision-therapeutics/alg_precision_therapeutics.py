@@ -1705,17 +1705,31 @@ def cmd_show_phenome(args):
 
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            results = list(tx.query(f'''
+            # Fetch with frequency (relations attrs must be bound in match, not fetched as $rel.attr)
+            results_with_freq = list(tx.query(f'''
                 match
                     $d isa apt-disease, has id "{escape_string(disease_id)}";
-                    $rel (disease: $d, phenotype: $p) isa apt-disease-has-phenotype;
+                    (disease: $d, phenotype: $p) isa apt-disease-has-phenotype,
+                        has apt-frequency-qualifier $freq;
                 fetch {{
                     "hpo_id": $p.apt-hpo-id,
                     "label": $p.apt-hpo-label,
-                    "frequency": $rel.apt-frequency-qualifier,
-                    "evidence": $rel.apt-evidence-code
+                    "frequency": $freq
                 }};
             ''').resolve())
+            # Also get phenotypes without frequency qualifier
+            results_no_freq = list(tx.query(f'''
+                match
+                    $d isa apt-disease, has id "{escape_string(disease_id)}";
+                    (disease: $d, phenotype: $p) isa apt-disease-has-phenotype;
+                    not {{ (disease: $d, phenotype: $p) isa apt-disease-has-phenotype,
+                        has apt-frequency-qualifier $freq2; }};
+                fetch {{
+                    "hpo_id": $p.apt-hpo-id,
+                    "label": $p.apt-hpo-label
+                }};
+            ''').resolve())
+        results = results_with_freq + [dict(r, frequency="unknown") for r in results_no_freq]
 
     # Group by frequency
     by_freq = {}
@@ -1754,13 +1768,11 @@ def cmd_show_genes(args):
             causal = list(tx.query(f'''
                 match
                     $d isa apt-disease, has id "{escape_string(disease_id)}";
-                    $rel (gene: $g, disease: $d) isa apt-gene-causes-disease;
+                    (gene: $g, disease: $d) isa apt-gene-causes-disease;
                 fetch {{
                     "id": $g.id,
                     "symbol": $g.apt-gene-symbol,
-                    "hgnc_id": $g.apt-hgnc-id,
-                    "association_type": "causal",
-                    "confidence": $rel.confidence
+                    "hgnc_id": $g.apt-hgnc-id
                 }};
             ''').resolve())
 
@@ -1768,15 +1780,19 @@ def cmd_show_genes(args):
             associated = list(tx.query(f'''
                 match
                     $d isa apt-disease, has id "{escape_string(disease_id)}";
-                    $rel (gene: $g, disease: $d) isa apt-gene-associated-with;
+                    (gene: $g, disease: $d) isa apt-gene-associated-with;
                 fetch {{
                     "id": $g.id,
                     "symbol": $g.apt-gene-symbol,
-                    "hgnc_id": $g.apt-hgnc-id,
-                    "association_type": $rel.apt-association-type,
-                    "confidence": $rel.confidence
+                    "hgnc_id": $g.apt-hgnc-id
                 }};
             ''').resolve())
+
+    # Add association_type in Python (can't use literals in TypeQL fetch)
+    for g in causal:
+        g["association_type"] = "causal"
+    for g in associated:
+        g["association_type"] = "correlated"
 
     print(json.dumps({
         "success": True,
