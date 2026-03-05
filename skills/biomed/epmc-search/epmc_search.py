@@ -304,8 +304,8 @@ def insert_paper_to_typedb(driver, paper: dict, collection_id: str | None = None
         query += f', has journal-issue "{escape_string(paper["journal_issue"])}"'
     if paper.get("page_range"):
         query += f', has page-range "{escape_string(paper["page_range"])}"'
-    if paper.get("content"):
-        query += f', has content "{escape_string(paper["content"])}"'
+    # Note: 'content' is not stored on scilit-paper (domain-thing).
+    # Content attributes belong only to information-content-entity subtypes.
 
     # Add keywords
     for kw in paper.get("keywords", []):
