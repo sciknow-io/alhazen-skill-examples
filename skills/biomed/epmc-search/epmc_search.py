@@ -294,7 +294,8 @@ def insert_paper_to_typedb(driver, paper: dict, collection_id: str | None = None
         query += f', has pmcid "{paper["pmcid"]}"'
     if paper.get("abstract"):
         query += f', has abstract-text "{escape_string(paper["abstract"])}"'
-    if paper.get("publication_year"):
+    # scilit-preprint owns publication-date (datetime), not publication-year (integer)
+    if paper.get("publication_year") and paper.get("typedb_type") != "scilit-preprint":
         query += f", has publication-year {paper['publication_year']}"
     if paper.get("journal_name"):
         query += f', has journal-name "{escape_string(paper["journal_name"])}"'
