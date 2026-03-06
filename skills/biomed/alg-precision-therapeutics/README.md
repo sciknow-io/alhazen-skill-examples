@@ -326,3 +326,487 @@ flowchart LR
 - TypeDB 3.x running: `make db-start`
 - APT schema loaded: `make db-init`
 - Python deps: `uv sync --all-extras`
+
+---
+
+## Knowledge Graph Queries
+
+The APT knowledge graph supports direct TypeQL queries for deep mechanism analysis beyond
+what the CLI views expose. The queries below cover the most useful analytical questions, using
+NGLY1 deficiency (`MONDO:0800044`) as the running example — substitute the MONDO ID for any
+disease in your graph.
+
+### Running Queries
+
+**Via Python TypeDB driver:**
+```python
+from typedb.driver import TypeDB, Credentials, DriverOptions, TransactionType
+
+driver = TypeDB.driver(
+    "localhost:1729",
+    Credentials("admin", "password"),
+    DriverOptions(is_tls_enabled=False),
+)
+
+with driver.transaction("alhazen_notebook", TransactionType.READ) as tx:
+    results = list(tx.query("""
+        match
+          $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+          ...
+        fetch { ... };
+    """).resolve())
+    for row in results:
+        print(row)   # plain Python dicts — no .get("value") unwrapping needed
+```
+
+**Via TypeDB Studio** — connect to `localhost:1729`, open `alhazen_notebook`, paste queries
+into the editor.
+
+**Inspect CLI output before writing queries** — always dump raw output first to confirm key
+names before writing key-access post-processors:
+```bash
+uv run python .claude/skills/alg-precision-therapeutics/alg_precision_therapeutics.py \
+    show-mechanisms --mondo-id MONDO:0800044 2>/dev/null \
+    | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin),indent=2))"
+```
+
+---
+
+### 1. Mechanism Profile Queries
+
+**All mechanisms for a disease — with evidence quality:**
+
+Useful as the first query on a new investigation to see what mechanism types and evidence
+levels have been curated.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044",
+      has name $dname;
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype,
+      has apt-mechanism-level $mlevel,
+      has apt-mechanism-evidence-strength $strength,
+      has apt-therapeutic-addressability $druggable;
+  ($d, $m) isa apt-disease-has-mechanism;
+fetch {
+  "disease": $dname,
+  "mechanism": $mname,
+  "type": $mtype,
+  "level": $mlevel,
+  "evidence_strength": $strength,
+  "therapeutically_addressable": $druggable
+};
+```
+
+**Full gene-to-phenotype causal chain:**
+
+The core APT reasoning chain — traces the path from genomic cause through mechanism to
+clinical manifestation. Each row is one `gene → mechanism → phenotype` triple.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype;
+  $g isa apt-gene, has apt-gene-symbol $gsym;
+  $p isa apt-phenotype,
+      has apt-hpo-id $hpo_id,
+      has apt-hpo-label $plabel;
+  ($d, $m) isa apt-disease-has-mechanism;
+  ($m, $g) isa apt-mechanism-involves-gene;
+  ($m, $p) isa apt-mechanism-causes-phenotype;
+fetch {
+  "mechanism": $mname,
+  "mechanism_type": $mtype,
+  "causal_gene": $gsym,
+  "downstream_phenotype": $plabel,
+  "hpo_id": $hpo_id
+};
+```
+
+**GoF / overactivity mechanisms — potential inhibitor targets:**
+
+Mechanisms with `apt-functional-impact = "overactivity"` are candidates for small-molecule
+inhibitors, antisense oligonucleotides, or blocking antibodies.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype,
+      has apt-functional-impact "overactivity";
+  $g isa apt-gene, has apt-gene-symbol $gsym;
+  ($d, $m) isa apt-disease-has-mechanism;
+  ($m, $g) isa apt-mechanism-involves-gene;
+fetch {
+  "mechanism": $mname,
+  "mechanism_type": $mtype,
+  "causal_gene": $gsym
+};
+```
+
+**LoF / underactivity mechanisms — augmentation or replacement targets:**
+
+Complement of the above — mechanisms requiring enzyme replacement, gene therapy, or
+substrate reduction strategies.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype,
+      has apt-functional-impact $impact;
+  $g isa apt-gene, has apt-gene-symbol $gsym;
+  ($d, $m) isa apt-disease-has-mechanism;
+  ($m, $g) isa apt-mechanism-involves-gene;
+  { $impact = "underactivity"; } or { $impact = "absence"; };
+fetch {
+  "mechanism": $mname,
+  "mechanism_type": $mtype,
+  "functional_impact": $impact,
+  "causal_gene": $gsym
+};
+```
+
+---
+
+### 2. Phenotypic Analysis Queries
+
+**Phenotypes by frequency tier — burden map:**
+
+Reveals which clinical features are obligate vs. occasional and should anchor outcome
+measures for any trial.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $p isa apt-phenotype,
+      has apt-hpo-id $hpo_id,
+      has apt-hpo-label $plabel;
+  ($d, $p) isa apt-disease-has-phenotype, has apt-frequency-qualifier $freq;
+fetch {
+  "hpo_id": $hpo_id,
+  "phenotype": $plabel,
+  "frequency": $freq
+};
+```
+
+**Phenotypes with no mechanistic explanation:**
+
+Clinical features present in the disease that are not yet linked to any curated mechanism.
+These represent either incomplete curation or secondary / emergent biology.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $p isa apt-phenotype,
+      has apt-hpo-id $hpo_id,
+      has apt-hpo-label $plabel;
+  ($d, $p) isa apt-disease-has-phenotype;
+  not { ($m, $p) isa apt-mechanism-causes-phenotype; };
+fetch {
+  "unexplained_phenotype": $plabel,
+  "hpo_id": $hpo_id
+};
+```
+
+**Phenotypes caused by a specific mechanism — projected clinical impact of a therapy:**
+
+Given a mechanism, what symptoms should improve if that mechanism is corrected? Useful for
+designing outcome measures.
+
+```typeql
+match
+  $m isa apt-mechanism, has name "NGLY1 LoF — deglycosylation failure";
+  $p isa apt-phenotype,
+      has apt-hpo-id $hpo_id,
+      has apt-hpo-label $plabel;
+  ($m, $p) isa apt-mechanism-causes-phenotype;
+fetch {
+  "phenotype": $plabel,
+  "hpo_id": $hpo_id
+};
+```
+
+---
+
+### 3. Therapeutic Landscape Queries
+
+**Therapeutic strategies and drugs per mechanism:**
+
+The full therapeutic map — which strategies and drug candidates address which mechanisms.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype;
+  $s isa apt-therapeutic-strategy,
+      has name $sname,
+      has apt-therapeutic-approach $approach,
+      has apt-therapeutic-modality $modality;
+  $drug isa apt-drug,
+      has name $dname,
+      has apt-drug-class $dclass;
+  ($d, $m) isa apt-disease-has-mechanism;
+  ($s, $m) isa apt-strategy-targets-mechanism;
+  ($s, $drug) isa apt-strategy-implements;
+fetch {
+  "mechanism": $mname,
+  "mechanism_type": $mtype,
+  "strategy": $sname,
+  "approach": $approach,
+  "modality": $modality,
+  "drug": $dname,
+  "drug_class": $dclass
+};
+```
+
+**Drugs targeting causal genes (ChEMBL data):**
+
+Existing compounds that modulate the causal gene — the starting point for a repurposing
+scan. `apt-development-stage` from the entity reflects the most advanced approved indication.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $g isa apt-gene, has apt-gene-symbol $gsym;
+  $drug isa apt-drug,
+      has name $dname,
+      has apt-therapeutic-modality $modality,
+      has apt-development-stage $stage;
+  ($g, $d) isa apt-gene-causes-disease;
+  ($drug, $g) isa apt-drug-targets, has apt-mechanism-of-action $moa;
+fetch {
+  "causal_gene": $gsym,
+  "drug": $dname,
+  "modality": $modality,
+  "development_stage": $stage,
+  "mechanism_of_action": $moa
+};
+```
+
+**Clinical trials by phase and status:**
+
+Snapshot of the clinical development landscape — how far along is the field, what
+interventional modalities are being tested.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $t isa apt-clinical-trial,
+      has name $tname,
+      has apt-nct-id $nct_id,
+      has apt-trial-phase $phase,
+      has apt-trial-status $status;
+  ($t, $d) isa apt-trial-studies;
+fetch {
+  "trial_name": $tname,
+  "nct_id": $nct_id,
+  "phase": $phase,
+  "status": $status
+};
+```
+
+**Strategies targeting the same mechanism type across all diseases:**
+
+Finds therapeutic strategies curated for any disease that share the same mechanism type
+as the target disease — surfaces potentially transferable approaches.
+
+```typeql
+match
+  $target isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $target_mech isa apt-mechanism, has apt-mechanism-type $mtype;
+  ($target, $target_mech) isa apt-disease-has-mechanism;
+  $other isa apt-disease, has name $other_name;
+  $other_mech isa apt-mechanism, has apt-mechanism-type $mtype;
+  $s isa apt-therapeutic-strategy,
+      has name $sname,
+      has apt-therapeutic-approach $approach,
+      has apt-therapeutic-modality $modality;
+  ($other, $other_mech) isa apt-disease-has-mechanism;
+  ($s, $other_mech) isa apt-strategy-targets-mechanism;
+  $other != $target;
+fetch {
+  "strategy": $sname,
+  "approach": $approach,
+  "modality": $modality,
+  "from_disease": $other_name,
+  "shared_mechanism_type": $mtype
+};
+```
+
+---
+
+### 4. Evidence and Coverage Gap Queries
+
+**Mechanisms with no therapeutic strategy (white space in the landscape):**
+
+These are known mechanisms of harm with no curated therapeutic approach — the highest-value
+targets for a new drug discovery program.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype,
+      has apt-therapeutic-addressability $addressable;
+  ($d, $m) isa apt-disease-has-mechanism;
+  not {
+    $s isa apt-therapeutic-strategy;
+    ($s, $m) isa apt-strategy-targets-mechanism;
+  };
+fetch {
+  "mechanism": $mname,
+  "type": $mtype,
+  "addressability": $addressable
+};
+```
+
+**Mechanisms not yet linked to a causal gene (incomplete curation):**
+
+Highlights gaps in the mechanism graph that need further literature review before the chain
+from gene to phenotype can be drawn.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype;
+  ($d, $m) isa apt-disease-has-mechanism;
+  not { ($m, $g) isa apt-mechanism-involves-gene; };
+fetch {
+  "incomplete_mechanism": $mname,
+  "type": $mtype
+};
+```
+
+**Causal genes with no drug targeting them (undrugged targets):**
+
+Genes confirmed causal by Monarch but with no compound in ChEMBL. These require novel
+target-based drug discovery.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $g isa apt-gene, has apt-gene-symbol $gsym;
+  ($g, $d) isa apt-gene-causes-disease;
+  not {
+    $drug isa apt-drug;
+    ($drug, $g) isa apt-drug-targets;
+  };
+fetch {
+  "undrugged_causal_gene": $gsym
+};
+```
+
+**Weakly evidenced mechanisms — hypothesized only:**
+
+Filters to mechanisms curated at the lowest evidence level. Useful when reviewing which
+parts of the knowledge graph need more experimental support before committing to a
+therapeutic strategy.
+
+```typeql
+match
+  $d isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $m isa apt-mechanism,
+      has name $mname,
+      has apt-mechanism-type $mtype,
+      has apt-mechanism-evidence-strength "hypothesized";
+  ($d, $m) isa apt-disease-has-mechanism;
+fetch {
+  "mechanism": $mname,
+  "type": $mtype
+};
+```
+
+---
+
+### 5. Cross-Disease Analysis Queries
+
+**Diseases sharing the same mechanism type (repurposing surface):**
+
+Finds every other disease in the knowledge graph that has been curated with the same
+mechanism type as the target disease. Approved drugs for those diseases are prime
+repurposing candidates.
+
+```typeql
+match
+  $target isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $target_mech isa apt-mechanism, has apt-mechanism-type $mtype;
+  ($target, $target_mech) isa apt-disease-has-mechanism;
+  $other isa apt-disease, has name $other_name, has apt-mondo-id $other_mondo;
+  $other_mech isa apt-mechanism, has apt-mechanism-type $mtype;
+  ($other, $other_mech) isa apt-disease-has-mechanism;
+  $other != $target;
+fetch {
+  "disease": $other_name,
+  "mondo_id": $other_mondo,
+  "shared_mechanism_type": $mtype
+};
+```
+
+**Approved drugs for sibling diseases in the MONDO hierarchy:**
+
+Walks up the MONDO `subclass-of` tree to find diseases that share a parent with the target
+disease, then returns any approved drugs indicated for those siblings.
+
+```typeql
+match
+  $target isa apt-disease, has apt-mondo-id "MONDO:0800044";
+  $parent isa apt-disease;
+  $sibling isa apt-disease, has name $sib_name, has apt-mondo-id $sib_mondo;
+  $drug isa apt-drug,
+      has name $dname,
+      has apt-development-stage "approved";
+  ($target, $parent) isa apt-disease-subclass-of;
+  ($sibling, $parent) isa apt-disease-subclass-of;
+  ($drug, $sibling) isa apt-drug-indicated-for;
+  $sibling != $target;
+fetch {
+  "sibling_disease": $sib_name,
+  "sibling_mondo": $sib_mondo,
+  "approved_drug": $dname
+};
+```
+
+**Full knowledge-graph landscape — all diseases and their mechanism types:**
+
+Useful when first exploring the graph to understand what has been curated and which
+mechanism types are represented.
+
+```typeql
+match
+  $d isa apt-disease, has name $dname, has apt-mondo-id $mondo;
+  $m isa apt-mechanism, has apt-mechanism-type $mtype;
+  ($d, $m) isa apt-disease-has-mechanism;
+fetch {
+  "disease": $dname,
+  "mondo_id": $mondo,
+  "mechanism_type": $mtype
+};
+```
+
+---
+
+### TypeQL 3.x Query Conventions
+
+- **Relation attributes** must be bound in the `match` clause, not referenced in `fetch`:
+  ```typeql
+  ($d, $p) isa apt-disease-has-phenotype, has apt-frequency-qualifier $freq;
+  fetch { "frequency": $freq };   -- OK: $freq bound in match
+  -- NOT: fetch { "frequency": $rel.apt-frequency-qualifier }  -- error [FEX1]
+  ```
+- **Negation** uses `not { ... };` blocks.
+- **`fetch` values** must be `$variable` references — literal strings are invalid in `fetch`.
+- **Non-ASCII characters** (arrows, special symbols) cause TypeQL parse errors even in
+  comments — use ASCII-only TypeQL.
+- **Fetch results** are plain Python dicts — no `.get("value")` unwrapping needed.
