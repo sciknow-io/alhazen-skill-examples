@@ -114,3 +114,30 @@ export async function getCollection(id: string) {
 export async function getNotes(subjectId: string) {
   return runNotebook(['query-notes', '--subject', subjectId]);
 }
+
+export async function listOpportunities(filters?: {
+  type?: string;
+  status?: string;
+  priority?: string;
+}) {
+  const args = ['list-opportunities'];
+  if (filters?.type) args.push('--type', filters.type);
+  if (filters?.status) args.push('--status', filters.status);
+  if (filters?.priority) args.push('--priority', filters.priority);
+  return runJobhunt(args);
+}
+
+export async function getOpportunity(id: string) {
+  return runJobhunt(['show-opportunity', '--id', id]);
+}
+
+export async function updateOpportunity(
+  id: string,
+  updates: { status?: string; stage?: string; priority?: string }
+) {
+  const args = ['update-opportunity', '--id', id];
+  if (updates.status) args.push('--status', updates.status);
+  if (updates.stage) args.push('--stage', updates.stage);
+  if (updates.priority) args.push('--priority', updates.priority);
+  return runJobhunt(args);
+}

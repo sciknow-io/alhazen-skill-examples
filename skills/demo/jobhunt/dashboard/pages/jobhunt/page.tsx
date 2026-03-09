@@ -17,6 +17,7 @@ import { SkillsMatrix } from '@/components/jobhunt/skills-matrix';
 import { LearningPlan, LearningCollection } from '@/components/jobhunt/learning-plan';
 import { StatsOverview } from '@/components/jobhunt/stats-overview';
 import { CandidatesTable, Candidate } from '@/components/jobhunt/candidates-table';
+import { OpportunitiesBoard, Opportunity } from '@/components/jobhunt/opportunities-board';
 import {
   RefreshCw,
   Kanban,
@@ -28,6 +29,7 @@ import {
   List,
   ChevronLeft,
   ChevronRight,
+  Compass,
 } from 'lucide-react';
 
 interface Position {
@@ -68,6 +70,9 @@ export default function Dashboard() {
   const [learningCollections, setLearningCollections] = useState<LearningCollection[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
+  const [opportunitiesLoading, setOpportunitiesLoading] = useState(false);
+  const [opportunitiesLoaded, setOpportunitiesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
@@ -151,6 +156,21 @@ export default function Dashboard() {
     }
   }, []);
 
+  const fetchOpportunities = useCallback(async () => {
+    setOpportunitiesLoading(true);
+    try {
+      const res = await fetch('/api/jobhunt/opportunities?type=all');
+      if (!res.ok) throw new Error('Failed to fetch opportunities');
+      const data = await res.json();
+      setOpportunities(data.opportunities || []);
+      setOpportunitiesLoaded(true);
+    } catch (err) {
+      console.error('Opportunities fetch error:', err);
+    } finally {
+      setOpportunitiesLoading(false);
+    }
+  }, []);
+
   const fetchAllTriaged = useCallback(async (page: number) => {
     setAllTriagedLoading(true);
     try {
@@ -228,6 +248,9 @@ export default function Dashboard() {
   const handleTabChange = (value: string) => {
     if (value === 'candidates' && candidates.length === 0) {
       fetchCandidates();
+    }
+    if (value === 'opportunities' && !opportunitiesLoaded) {
+      fetchOpportunities();
     }
     if (value === 'all-triaged' && !allTriagedLoaded) {
       fetchAllTriaged(0);
@@ -334,6 +357,10 @@ export default function Dashboard() {
               <Kanban className="w-4 h-4" />
               Pipeline
             </TabsTrigger>
+            <TabsTrigger value="opportunities" className="flex items-center gap-2">
+              <Compass className="w-4 h-4" />
+              Opportunities
+            </TabsTrigger>
             <TabsTrigger value="skills" className="flex items-center gap-2">
               <Target className="w-4 h-4" />
               Skills Matrix
@@ -362,6 +389,16 @@ export default function Dashboard() {
                 positions={positions}
                 onStatusChange={handleStatusChange}
               />
+            )}
+          </TabsContent>
+
+          <TabsContent value="opportunities">
+            {opportunitiesLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <OpportunitiesBoard opportunities={opportunities} />
             )}
           </TabsContent>
 
