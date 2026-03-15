@@ -26,19 +26,30 @@ import {
   Lightbulb,
 } from 'lucide-react';
 
-// Helper to extract value from TypeDB fetch result
-function getValue(attr: Array<{ value: unknown }> | undefined): string | null {
-  if (!attr || attr.length === 0) return null;
-  const val = String(attr[0].value);
-  // Unescape newlines/tabs — handle double-escaped (\\n) before single-escaped (\n)
-  // Content may be double-escaped when CLI passes literal \n through escape_string()
-  return val.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n')
-            .replace(/\\\\t/g, '\t').replace(/\\t/g, '\t');
+// Helper to extract value — handles both plain values and TypeDB fetch arrays
+function getValue(attr: unknown): string | null {
+  if (attr === null || attr === undefined) return null;
+  // Plain string/number from pre-extracted API response
+  if (typeof attr === 'string') {
+    return attr.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n')
+              .replace(/\\\\t/g, '\t').replace(/\\t/g, '\t');
+  }
+  if (typeof attr === 'number') return String(attr);
+  // TypeDB fetch array format: [{ value: ... }]
+  if (Array.isArray(attr) && attr.length > 0 && attr[0]?.value !== undefined) {
+    return getValue(attr[0].value);
+  }
+  return null;
 }
 
-function getNumber(attr: Array<{ value: unknown }> | undefined): number | null {
-  if (!attr || attr.length === 0) return null;
-  return Number(attr[0].value);
+function getNumber(attr: unknown): number | null {
+  if (attr === null || attr === undefined) return null;
+  if (typeof attr === 'number') return attr;
+  if (typeof attr === 'string') { const n = Number(attr); return isNaN(n) ? null : n; }
+  if (Array.isArray(attr) && attr.length > 0 && attr[0]?.value !== undefined) {
+    return getNumber(attr[0].value);
+  }
+  return null;
 }
 
 // Note type icons
@@ -140,17 +151,18 @@ export default function PositionPage({ params }: PositionPageProps) {
   const companyUrl = getValue(company?.['company-url']);
   const companyDescription = getValue(company?.description);
 
-  // Find status from notes
+  // Find status from notes (handle both {type: {label: "..."}} and {type: "..."})
+  const getNoteType = (n: any) => typeof n.type === 'string' ? n.type : n.type?.label;
   const statusNote = notes.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (n: any) => n.type?.label === 'jobhunt-application-note'
+    (n: any) => getNoteType(n) === 'jobhunt-application-note'
   );
   const status = getValue(statusNote?.['application-status']) || 'researching';
 
   // Find fit analysis note
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fitNote = notes.find((n: any) =>
-    n.type?.label === 'jobhunt-fit-analysis-note'
+    getNoteType(n) === 'jobhunt-fit-analysis-note'
   );
   const fitScore = getNumber(fitNote?.['fit-score']);
   const fitSummary = getValue(fitNote?.['fit-summary']);
@@ -158,7 +170,8 @@ export default function PositionPage({ params }: PositionPageProps) {
   // Group other notes by type
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const groupedNotes = notes.reduce((acc: Record<string, any[]>, note: any) => {
-    const type = note.type?.label?.replace('jobhunt-', '').replace('-note', '') || 'general';
+    const rawType = getNoteType(note) || '';
+    const type = rawType.replace('jobhunt-', '').replace('-note', '') || 'general';
     if (type !== 'application' && type !== 'fit-analysis') {
       if (!acc[type]) acc[type] = [];
       acc[type].push(note);
@@ -323,7 +336,7 @@ export default function PositionPage({ params }: PositionPageProps) {
                     {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                     {requirements.map((req: any, idx: number) => {
                       const skill = getValue(req['skill-name']);
-                      const level = getValue(req['requirement-level']);
+                      const level = getValue(req['skill-level']) || getValue(req['requirement-level']);
                       const yourLevel = getValue(req['your-level']);
                       const content = getValue(req.content);
 
