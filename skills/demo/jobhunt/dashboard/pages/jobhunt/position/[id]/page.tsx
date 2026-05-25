@@ -4,32 +4,56 @@ import { useState, useEffect, useMemo, use } from 'react';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
-import {
-  ArrowLeft,
-  BookOpen,
-  Building2,
-  MapPin,
-  DollarSign,
-  ExternalLink,
-  RefreshCw,
-  CheckCircle2,
-  XCircle,
-  AlertCircle,
-  Calendar,
-  User,
-  FileText,
-  Target,
-  MessageSquare,
-  Lightbulb,
-  ClipboardList,
-  LayoutDashboard,
-} from 'lucide-react';
 
-// --- Helpers ---
+/* ── Starry Night palette ── */
+const T = {
+  bg: '#070d1c',
+  bgRaised: '#0c1628',
+  panel: 'rgba(12,22,40,0.72)',
+  fg: '#c8dde8',
+  fgDim: '#8ba4b8',
+  fgFaint: '#5e7387',
+  teal: '#5aadaf',
+  blue: '#5b8ab8',
+  olive: '#b8c84a',
+  mint: '#62c4bc',
+  rust: '#c87a4a',
+  border: 'rgba(90,173,175,0.18)',
+  borderDim: 'rgba(200,221,232,0.08)',
+  mono: "'JetBrains Mono', monospace",
+  serif: "'DM Serif Display', serif",
+  sans: "'DM Sans', sans-serif",
+};
+
+/* ── Markdown components ── */
+const MD_COMPONENTS = {
+  p: ({ children }: { children?: React.ReactNode }) => <p style={{ margin: '4px 0' }}>{children}</p>,
+  h2: ({ children }: { children?: React.ReactNode }) => <h2 style={{ fontSize: 15, fontWeight: 700, color: T.fg, margin: '14px 0 4px' }}>{children}</h2>,
+  h3: ({ children }: { children?: React.ReactNode }) => <h3 style={{ fontSize: 14, fontWeight: 600, color: T.fg, margin: '10px 0 4px' }}>{children}</h3>,
+  ul: ({ children }: { children?: React.ReactNode }) => <ul style={{ paddingLeft: 18, margin: '4px 0' }}>{children}</ul>,
+  ol: ({ children }: { children?: React.ReactNode }) => <ol style={{ paddingLeft: 18, margin: '4px 0' }}>{children}</ol>,
+  li: ({ children }: { children?: React.ReactNode }) => <li style={{ margin: '2px 0' }}>{children}</li>,
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: T.teal, textDecoration: 'underline', textUnderlineOffset: 3 }}>{children}</a>
+  ),
+  code: ({ children }: { children?: React.ReactNode }) => (
+    <code style={{ fontFamily: T.mono, fontSize: 12, background: T.bgRaised, padding: '1px 5px', borderRadius: 3, color: T.olive }}>{children}</code>
+  ),
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 12, margin: '8px 0', color: T.fgFaint }}>{children}</blockquote>
+  ),
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <table style={{ borderCollapse: 'collapse', fontSize: 12, margin: '8px 0', width: '100%' }}>{children}</table>
+  ),
+  th: ({ children }: { children?: React.ReactNode }) => (
+    <th style={{ border: `1px solid ${T.border}`, padding: '4px 8px', textAlign: 'left', fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>{children}</th>
+  ),
+  td: ({ children }: { children?: React.ReactNode }) => (
+    <td style={{ border: `1px solid ${T.borderDim}`, padding: '4px 8px' }}>{children}</td>
+  ),
+};
+
+/* ── Helpers ── */
 
 function unesc(s: string | undefined | null): string {
   let text = (s ?? '').replace(/\\n/g, '\n');
@@ -85,52 +109,80 @@ function formatShortDate(dateStr: string | null): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-// --- Constants ---
+/* ── Config maps ── */
 
-const NOTE_ICONS: Record<string, React.ReactNode> = {
-  'fit-analysis': <Target className="w-4 h-4" />,
-  'strategy': <Lightbulb className="w-4 h-4" />,
-  'interaction': <User className="w-4 h-4" />,
-  'research': <FileText className="w-4 h-4" />,
-  'interview': <MessageSquare className="w-4 h-4" />,
-  'skill-gap': <AlertCircle className="w-4 h-4" />,
-  'application': <ClipboardList className="w-4 h-4" />,
-  'general': <FileText className="w-4 h-4" />,
+const NOTE_TYPES: Record<string, { label: string; short: string; color: string }> = {
+  'fit-analysis': { label: 'Fit Analysis', short: 'FIT', color: T.mint },
+  'strategy':     { label: 'Strategy',     short: 'STRAT', color: T.fgDim },
+  'interaction':  { label: 'Interaction',  short: 'TALK', color: T.blue },
+  'research':     { label: 'Research',     short: 'RES', color: T.fgDim },
+  'interview':    { label: 'Interview',    short: 'INT', color: T.blue },
+  'skill-gap':    { label: 'Skill Gap',    short: 'GAP', color: T.rust },
+  'application':  { label: 'Application',  short: 'APP', color: T.teal },
+  'general':      { label: 'General',      short: 'GEN', color: T.fgFaint },
 };
 
-const NOTE_LABELS: Record<string, string> = {
-  'fit-analysis': 'Fit Analysis',
-  'strategy': 'Strategy',
-  'interaction': 'Interactions',
-  'research': 'Research',
-  'interview': 'Interview',
-  'skill-gap': 'Skill Gaps',
-  'application': 'Application',
-  'general': 'General',
-};
+function noteTypeMeta(type: string) {
+  return NOTE_TYPES[type] || { label: type, short: '?', color: T.fgDim };
+}
 
 const SECTION_ORDER = [
   'fit-analysis', 'research', 'strategy', 'interaction',
   'interview', 'skill-gap', 'application', 'general',
 ];
 
-const PRIORITY_COLORS: Record<string, string> = {
-  high: 'bg-red-500/20 text-red-400 border-red-500/30',
-  medium: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-  low: 'bg-green-500/20 text-green-400 border-green-500/30',
-};
-
 const STATUS_COLORS: Record<string, string> = {
-  researching: 'bg-slate-500/20 text-slate-300 border-slate-500/30',
-  applied: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  'phone-screen': 'bg-purple-500/20 text-purple-400 border-purple-500/30',
-  interviewing: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  offer: 'bg-green-500/20 text-green-400 border-green-500/30',
-  rejected: 'bg-red-500/20 text-red-400 border-red-500/30',
-  withdrawn: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+  researching: T.fgDim,
+  applied: T.teal,
+  'phone-screen': T.blue,
+  interviewing: T.olive,
+  offer: T.mint,
+  rejected: T.rust,
+  withdrawn: T.fgFaint,
 };
 
-// --- Page ---
+const PRIORITY_COLORS: Record<string, string> = {
+  high: T.olive,
+  medium: T.teal,
+  low: T.fgDim,
+};
+
+const LEVEL_COLORS: Record<string, string> = {
+  strong: T.mint,
+  expert: T.mint,
+  some: T.olive,
+  practiced: T.olive,
+  learning: T.rust,
+  aware: T.rust,
+  none: T.fgFaint,
+};
+
+/* ── Inline component helpers ── */
+
+function Chip({ label, color }: { label: string; color: string }) {
+  return (
+    <span style={{
+      fontFamily: T.mono, fontSize: 10, fontWeight: 700, letterSpacing: 1,
+      color, background: `${color}18`, borderRadius: 3, padding: '2px 8px',
+      textTransform: 'uppercase',
+    }}>
+      {label}
+    </span>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <span style={{
+      fontFamily: T.mono, fontSize: 10, color: T.fgFaint,
+      textTransform: 'uppercase', letterSpacing: 0.8,
+    }}>
+      {children}
+    </span>
+  );
+}
+
+/* ── Page ── */
 
 interface PositionPageProps {
   params: Promise<{ id: string }>;
@@ -178,7 +230,6 @@ export default function PositionPage({ params }: PositionPageProps) {
     fetchPosition();
   }, [id]);
 
-  // Group and sort notes
   const groupedNotes = useMemo(() => {
     if (!data?.notes) return {};
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -199,32 +250,34 @@ export default function PositionPage({ params }: PositionPageProps) {
     return groups;
   }, [data?.notes]);
 
-  // Find the selected note object
   const selectedNoteObj = useMemo(() => {
     if (selectedNote === 'overview' || !data?.notes) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return data.notes.find((n: any) => n.id === selectedNote) || null;
   }, [selectedNote, data?.notes]);
 
+  /* Loading */
   if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <span style={{ fontFamily: T.mono, fontSize: 13, color: T.fgDim }}>Loading...</span>
       </div>
     );
   }
 
+  /* Error */
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-background p-8">
-        <Link href="/jobhunt">
-          <Button variant="ghost" className="mb-4">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
-          </Button>
+      <div style={{ padding: 32 }}>
+        <Link href="/jobhunt" style={{ fontFamily: T.mono, fontSize: 13, color: T.teal, textDecoration: 'none' }}>
+          &larr; jobhunt
         </Link>
-        <div className="bg-destructive/10 text-destructive px-4 py-3 rounded-lg">
-          <strong>Error:</strong> {error || 'Position not found'}
+        <div style={{
+          marginTop: 16, padding: '12px 16px', borderRadius: 6,
+          background: `${T.rust}15`, border: `1px solid ${T.rust}33`, color: T.rust,
+          fontFamily: T.mono, fontSize: 12,
+        }}>
+          Error: {error || 'Position not found'}
         </div>
       </div>
     );
@@ -259,109 +312,124 @@ export default function PositionPage({ params }: PositionPageProps) {
   const fitSummary = getValue(fitNote?.['jhunt-fit-summary']);
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Compact sticky header */}
-      <header className="shrink-0 border-b border-border/50 bg-card/95 backdrop-blur-sm px-4 py-3">
-        <div className="flex items-center gap-3">
-          <Link href="/jobhunt">
-            <Button variant="ghost" size="sm" className="hover:bg-primary/10">
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: T.sans }}>
+      {/* Header */}
+      <header style={{
+        flexShrink: 0, padding: '14px 20px',
+        borderBottom: `1px solid ${T.border}`,
+        background: T.bgRaised,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+          <Link href="/jobhunt" style={{ fontFamily: T.mono, fontSize: 13, color: T.teal, textDecoration: 'none' }}>
+            &larr; jobhunt
           </Link>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg font-bold text-foreground truncate">{title}</h1>
-              {companyName && (
-                <span className="text-muted-foreground text-sm">@ {companyName}</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-wrap mt-0.5">
-              <Badge className={STATUS_COLORS[status]}>
-                {status.replace('-', ' ')}
-              </Badge>
-              {priority && (
-                <Badge className={PRIORITY_COLORS[priority]}>
-                  {priority}
-                </Badge>
-              )}
-              {fitScore !== null && (
-                <Badge variant="outline">
-                  <Target className="w-3 h-3 mr-1" />
-                  {Math.round(fitScore * 100)}% fit
-                </Badge>
-              )}
-              {salary && (
-                <span className="text-xs text-muted-foreground flex items-center gap-1">
-                  <DollarSign className="w-3 h-3" />{salary}
-                </span>
-              )}
-              {location && (
-                <span className="text-xs text-muted-foreground flex items-center gap-1">
-                  <MapPin className="w-3 h-3" />{location}
-                </span>
-              )}
-              {remotePolicy && (
-                <span className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Building2 className="w-3 h-3" />{remotePolicy}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="shrink-0 flex items-center gap-2">
-            {url && (
-              <a href={url} target="_blank" rel="noopener noreferrer">
-                <Button variant="outline" size="sm">
-                  <ExternalLink className="w-3 h-3 mr-1" />
-                  Posting
-                </Button>
-              </a>
-            )}
-            {companyUrl && (
-              <a href={companyUrl} target="_blank" rel="noopener noreferrer">
-                <Button variant="ghost" size="sm">
-                  <Building2 className="w-3 h-3 mr-1" />
-                  Company
-                </Button>
-              </a>
-            )}
-          </div>
+          {companyName && (
+            <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>
+              {companyName}
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          {url && (
+            <a href={url} target="_blank" rel="noopener noreferrer" style={{
+              fontFamily: T.mono, fontSize: 11, color: T.fgDim,
+              border: `1px solid ${T.borderDim}`, borderRadius: 4,
+              padding: '3px 10px', textDecoration: 'none',
+              transition: 'color 0.15s, border-color 0.15s',
+            }}>
+              Posting &rarr;
+            </a>
+          )}
+          {companyUrl && (
+            <a href={companyUrl} target="_blank" rel="noopener noreferrer" style={{
+              fontFamily: T.mono, fontSize: 11, color: T.fgDim,
+              border: `1px solid ${T.borderDim}`, borderRadius: 4,
+              padding: '3px 10px', textDecoration: 'none',
+              transition: 'color 0.15s, border-color 0.15s',
+            }}>
+              Company &rarr;
+            </a>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+          <h1 style={{ fontFamily: T.serif, fontSize: 22, color: T.fg, margin: 0, fontWeight: 400 }}>
+            {title}
+          </h1>
+          <Chip label={status.replace('-', ' ')} color={STATUS_COLORS[status] || T.fgDim} />
+          {priority && <Chip label={priority} color={PRIORITY_COLORS[priority] || T.fgDim} />}
+          {fitScore !== null && (
+            <span style={{ fontFamily: T.mono, fontSize: 11, color: T.mint }}>
+              {Math.round(fitScore * 100)}% fit
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginTop: 6, flexWrap: 'wrap' }}>
+          {location && (
+            <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>{location}</span>
+          )}
+          {salary && (
+            <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>{salary}</span>
+          )}
+          {remotePolicy && (
+            <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>{remotePolicy}</span>
+          )}
+          {tags.length > 0 && tags.map((tag: string) => (
+            <span key={tag} style={{
+              fontFamily: T.mono, fontSize: 10, color: T.fgDim,
+              border: `1px solid ${T.borderDim}`, borderRadius: 10,
+              padding: '1px 8px',
+            }}>
+              {tag}
+            </span>
+          ))}
         </div>
       </header>
 
       {/* Main: sidebar + reading pane */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left nav */}
-        <nav style={{ width: '256px', minWidth: '256px', maxWidth: '256px' }} className="shrink-0 border-r border-border/50 overflow-y-auto overflow-x-hidden p-3 space-y-1 bg-card/30">
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+        {/* Sidebar */}
+        <nav style={{
+          width: 240, minWidth: 240, flexShrink: 0,
+          borderRight: `1px solid ${T.border}`,
+          overflowY: 'auto', padding: 10,
+          background: `${T.bgRaised}cc`,
+        }}>
           {/* Overview */}
           <button
             onClick={() => setSelectedNote('overview')}
-            className={`w-full text-left px-3 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors ${
-              selectedNote === 'overview'
-                ? 'bg-accent text-accent-foreground'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-            }`}
+            style={{
+              width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+              fontFamily: T.mono, fontSize: 11, letterSpacing: 0.5,
+              padding: '7px 10px', borderRadius: 4,
+              background: selectedNote === 'overview' ? `${T.teal}18` : 'transparent',
+              color: selectedNote === 'overview' ? T.teal : T.fgDim,
+              transition: 'color 0.15s, background 0.15s',
+            }}
           >
-            <LayoutDashboard className="w-4 h-4" />
             Overview
           </button>
 
-          <Separator className="my-2" />
+          <div style={{ borderTop: `1px solid ${T.borderDim}`, margin: '6px 0' }} />
 
           {/* Note sections */}
           {SECTION_ORDER.map(type => {
             const typeNotes = groupedNotes[type];
             if (!typeNotes?.length) return null;
+            const m = noteTypeMeta(type);
             return (
-              <details key={type} open className="group">
-                <summary className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none list-none [&::-webkit-details-marker]:hidden min-w-0">
-                  <span className="text-xs transition-transform group-open:rotate-90">&#9656;</span>
-                  {NOTE_ICONS[type] || <FileText className="w-4 h-4" />}
-                  <span>{NOTE_LABELS[type] || type}</span>
-                  <Badge variant="secondary" className="ml-auto text-[10px] px-1.5 py-0">
-                    {typeNotes.length}
-                  </Badge>
+              <details key={type} open style={{ marginBottom: 2 }}>
+                <summary style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '5px 10px', cursor: 'pointer',
+                  fontFamily: T.mono, fontSize: 10, letterSpacing: 0.5,
+                  color: T.fgFaint, textTransform: 'uppercase',
+                  listStyle: 'none', userSelect: 'none',
+                }}>
+                  <span style={{ fontSize: 8, color: m.color }}>&#9679;</span>
+                  {m.label}
+                  <span style={{ marginLeft: 'auto', fontSize: 9, color: T.fgFaint }}>{typeNotes.length}</span>
                 </summary>
-                <div className="ml-3 mt-0.5 space-y-0.5 border-l border-border/30 pl-2 min-w-0">
+                <div style={{ marginLeft: 12, borderLeft: `1px solid ${T.borderDim}`, paddingLeft: 8 }}>
                   {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {typeNotes.map((note: any) => {
                     const noteId = note.id;
@@ -372,18 +440,22 @@ export default function PositionPage({ params }: PositionPageProps) {
                       <button
                         key={noteId}
                         onClick={() => setSelectedNote(noteId)}
-                        className={`w-full min-w-0 text-left px-2.5 py-1.5 rounded text-xs transition-colors overflow-hidden ${
-                          isSelected
-                            ? 'bg-accent text-accent-foreground'
-                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                        }`}
+                        style={{
+                          width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                          fontFamily: T.sans, fontSize: 11,
+                          padding: '4px 8px', borderRadius: 3, marginBottom: 1,
+                          background: isSelected ? `${T.teal}18` : 'transparent',
+                          color: isSelected ? T.teal : T.fgDim,
+                          transition: 'color 0.15s, background 0.15s',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}
                       >
-                        <div className="truncate font-medium">
-                          {noteName}
-                          {createdAt && (
-                            <span className="text-[10px] opacity-50 font-normal ml-1">({formatShortDate(createdAt)})</span>
-                          )}
-                        </div>
+                        {noteName}
+                        {createdAt && (
+                          <span style={{ fontFamily: T.mono, fontSize: 9, opacity: 0.5, marginLeft: 4 }}>
+                            {formatShortDate(createdAt)}
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -395,16 +467,18 @@ export default function PositionPage({ params }: PositionPageProps) {
           {/* Job Description nav item */}
           {jobDescription && (
             <>
-              <Separator className="my-2" />
+              <div style={{ borderTop: `1px solid ${T.borderDim}`, margin: '6px 0' }} />
               <button
                 onClick={() => setSelectedNote('job-description')}
-                className={`w-full text-left px-3 py-2 rounded-md text-sm flex items-center gap-2 transition-colors ${
-                  selectedNote === 'job-description'
-                    ? 'bg-accent text-accent-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                }`}
+                style={{
+                  width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                  fontFamily: T.mono, fontSize: 11, letterSpacing: 0.5,
+                  padding: '7px 10px', borderRadius: 4,
+                  background: selectedNote === 'job-description' ? `${T.teal}18` : 'transparent',
+                  color: selectedNote === 'job-description' ? T.teal : T.fgDim,
+                  transition: 'color 0.15s, background 0.15s',
+                }}
               >
-                <FileText className="w-4 h-4" />
                 Job Description
               </button>
             </>
@@ -412,36 +486,32 @@ export default function PositionPage({ params }: PositionPageProps) {
         </nav>
 
         {/* Reading pane */}
-        <main className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-4xl">
+        <main style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
+          <div style={{ maxWidth: 800 }}>
             {selectedNote === 'overview' && (
               <OverviewPane
-                fitNote={fitNote}
-                fitScore={fitScore}
-                fitSummary={fitSummary}
-                requirements={requirements}
-                company={company}
-                companyName={companyName}
-                companyUrl={companyUrl}
-                companyDescription={companyDescription}
-                tags={tags}
+                fitNote={fitNote} fitScore={fitScore} fitSummary={fitSummary}
+                requirements={requirements} company={company}
+                companyName={companyName} companyUrl={companyUrl}
+                companyDescription={companyDescription} tags={tags}
                 backgroundReading={backgroundReading}
-                location={location}
-                salary={salary}
-                remotePolicy={remotePolicy}
+                location={location} salary={salary} remotePolicy={remotePolicy}
               />
             )}
-
             {selectedNote === 'job-description' && jobDescription && (
               <div>
-                <h2 className="text-xl font-semibold mb-4">Job Description</h2>
-                <Separator className="mb-4" />
-                <pre className="whitespace-pre-wrap text-sm bg-muted p-4 rounded-lg overflow-auto">
+                <h2 style={{ fontFamily: T.serif, fontSize: 18, color: T.fg, marginBottom: 14 }}>Job Description</h2>
+                <div style={{ borderTop: `1px solid ${T.borderDim}`, marginBottom: 14 }} />
+                <pre style={{
+                  whiteSpace: 'pre-wrap', fontSize: 12, fontFamily: T.sans,
+                  color: T.fgDim, lineHeight: 1.7,
+                  background: T.panel, border: `1px solid ${T.borderDim}`,
+                  borderRadius: 6, padding: 16,
+                }}>
                   {getValue(jobDescription.content)}
                 </pre>
               </div>
             )}
-
             {selectedNote !== 'overview' && selectedNote !== 'job-description' && selectedNoteObj && (
               <NotePane note={selectedNoteObj} />
             )}
@@ -452,200 +522,174 @@ export default function PositionPage({ params }: PositionPageProps) {
   );
 }
 
-// --- Overview Pane ---
+/* ── Overview Pane ── */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function OverviewPane({ fitNote, fitScore, fitSummary, requirements, company, companyName, companyUrl, companyDescription, tags, backgroundReading, location, salary, remotePolicy }: any) {
   return (
-    <div className="space-y-6">
-      {/* Quick Info */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {location && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-muted/50">
-            <MapPin className="w-4 h-4 text-muted-foreground shrink-0" />
-            <div className="min-w-0">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Location</p>
-              <p className="text-sm font-medium truncate">{location}</p>
-            </div>
-          </div>
-        )}
-        {salary && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-muted/50">
-            <DollarSign className="w-4 h-4 text-muted-foreground shrink-0" />
-            <div className="min-w-0">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Salary</p>
-              <p className="text-sm font-medium truncate">{salary}</p>
-            </div>
-          </div>
-        )}
-        {remotePolicy && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-muted/50">
-            <Building2 className="w-4 h-4 text-muted-foreground shrink-0" />
-            <div className="min-w-0">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Remote</p>
-              <p className="text-sm font-medium truncate">{remotePolicy}</p>
-            </div>
-          </div>
-        )}
-        {fitScore !== null && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-muted/50">
-            <Target className="w-4 h-4 text-muted-foreground shrink-0" />
-            <div>
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Fit Score</p>
-              <p className="text-sm font-medium">{Math.round(fitScore * 100)}%</p>
-            </div>
-          </div>
-        )}
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
-      {/* Tags */}
-      {tags.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap">
-          {tags.map((tag: string) => (
-            <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
-          ))}
+      {/* Quick Info */}
+      {(location || salary || remotePolicy || fitScore !== null) && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
+          {location && (
+            <div style={{ padding: '10px 14px', background: T.panel, border: `1px solid ${T.borderDim}`, borderRadius: 6 }}>
+              <Label>Location</Label>
+              <div style={{ fontSize: 13, color: T.fg, marginTop: 3 }}>{location}</div>
+            </div>
+          )}
+          {salary && (
+            <div style={{ padding: '10px 14px', background: T.panel, border: `1px solid ${T.borderDim}`, borderRadius: 6 }}>
+              <Label>Salary</Label>
+              <div style={{ fontSize: 13, color: T.fg, marginTop: 3 }}>{salary}</div>
+            </div>
+          )}
+          {remotePolicy && (
+            <div style={{ padding: '10px 14px', background: T.panel, border: `1px solid ${T.borderDim}`, borderRadius: 6 }}>
+              <Label>Remote</Label>
+              <div style={{ fontSize: 13, color: T.fg, marginTop: 3 }}>{remotePolicy}</div>
+            </div>
+          )}
+          {fitScore !== null && (
+            <div style={{ padding: '10px 14px', background: T.panel, border: `1px solid ${T.borderDim}`, borderRadius: 6 }}>
+              <Label>Fit Score</Label>
+              <div style={{ fontSize: 13, color: T.mint, marginTop: 3, fontFamily: T.mono }}>{Math.round(fitScore * 100)}%</div>
+            </div>
+          )}
         </div>
       )}
 
       {/* Fit Analysis */}
       {fitNote && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Target className="w-5 h-5" />
-              Fit Analysis
-              {fitScore !== null && (
-                <Badge variant="outline" className="ml-auto">
-                  {Math.round(fitScore * 100)}%
-                </Badge>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {fitSummary && (
-              <p className="text-sm font-medium mb-4">{fitSummary}</p>
+        <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <h2 style={{ fontFamily: T.serif, fontSize: 18, color: T.fg, margin: 0 }}>Fit Analysis</h2>
+            {fitScore !== null && (
+              <span style={{ fontFamily: T.mono, fontSize: 12, color: T.mint, marginLeft: 'auto' }}>
+                {Math.round(fitScore * 100)}%
+              </span>
             )}
-            {getValue(fitNote?.content) && (
-              <div className="prose prose-sm max-w-none dark:prose-invert">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {unesc(getValue(fitNote?.content))}
-                </ReactMarkdown>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          </div>
+          {fitSummary && (
+            <p style={{ fontSize: 13, color: T.fg, fontWeight: 500, marginBottom: 12 }}>{fitSummary}</p>
+          )}
+          {getValue(fitNote?.content) && (
+            <div style={{ fontSize: 13, color: T.fgDim, lineHeight: 1.7 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                {unesc(getValue(fitNote?.content))}
+              </ReactMarkdown>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Requirements */}
       {requirements.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Requirements ({requirements.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-              {requirements.map((req: any, idx: number) => {
-                const skill = getValue(req['jhunt-skill-name']) || getValue(req['slog-skill-name']);
-                const level = getValue(req['jhunt-skill-level']) || getValue(req['requirement-level']);
-                const yourLevel = req['_seeker_level'] || getValue(req['jhunt-your-level']) || 'none';
-                const content = getValue(req.content);
+        <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 20 }}>
+          <h2 style={{ fontFamily: T.serif, fontSize: 18, color: T.fg, margin: '0 0 14px' }}>
+            Requirements ({requirements.length})
+          </h2>
+          {/* Header row */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 80px 80px',
+            padding: '6px 0', marginBottom: 4,
+            fontFamily: T.mono, fontSize: 10, textTransform: 'uppercase',
+            letterSpacing: 0.5, color: T.fgFaint,
+          }}>
+            <span>Skill</span>
+            <span>Required</span>
+            <span>You</span>
+          </div>
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {requirements.map((req: any, idx: number) => {
+            const skill = getValue(req['jhunt-skill-name']) || getValue(req['slog-skill-name']) || '';
+            const level = getValue(req['jhunt-skill-level']) || getValue(req['requirement-level']) || 'required';
+            const yourLevel = req['_seeker_level'] || getValue(req['jhunt-your-level']) || 'none';
 
-                const levelValue: Record<string, number> = { none: 0, aware: 1, learning: 1, practiced: 2, some: 2, expert: 3, strong: 3 };
-                const threshold: Record<string, number> = { required: 2, preferred: 1, 'nice-to-have': 0 };
-                const myVal = levelValue[yourLevel] ?? 0;
-                const reqVal = threshold[level ?? 'required'] ?? 1;
-                const match = myVal >= reqVal ? 'match' : myVal > 0 ? 'partial' : 'gap';
+            const levelValue: Record<string, number> = { none: 0, aware: 1, learning: 1, practiced: 2, some: 2, expert: 3, strong: 3 };
+            const threshold: Record<string, number> = { required: 2, preferred: 1, 'nice-to-have': 0 };
+            const myVal = levelValue[yourLevel] ?? 0;
+            const reqVal = threshold[level ?? 'required'] ?? 1;
+            const match = myVal >= reqVal ? 'match' : myVal > 0 ? 'partial' : 'gap';
+            const dotColor = match === 'match' ? T.mint : match === 'partial' ? T.olive : T.rust;
 
-                return (
-                  <div key={idx} className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                    {match === 'match' && <CheckCircle2 className="w-5 h-5 text-green-500 mt-0.5" />}
-                    {match === 'partial' && <AlertCircle className="w-5 h-5 text-yellow-500 mt-0.5" />}
-                    {match === 'gap' && <XCircle className="w-5 h-5 text-red-500 mt-0.5" />}
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{skill}</span>
-                        <Badge variant="outline" className="text-xs">{level}</Badge>
-                        {yourLevel && (
-                          <Badge variant="secondary" className="text-xs">You: {yourLevel}</Badge>
-                        )}
-                      </div>
-                      {content && (
-                        <p className="text-sm text-muted-foreground mt-1">{content}</p>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
+            return (
+              <div key={idx} style={{
+                display: 'grid', gridTemplateColumns: '1fr 80px 80px',
+                gap: 4, padding: '6px 0', alignItems: 'center',
+                borderTop: idx > 0 ? `1px solid ${T.borderDim}` : 'none',
+              }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: T.fg }}>
+                  <span style={{
+                    width: 6, height: 6, borderRadius: '50%', background: dotColor, flexShrink: 0,
+                  }} />
+                  {skill}
+                </span>
+                <Chip label={level} color={T.fgFaint} />
+                <Chip label={yourLevel} color={LEVEL_COLORS[yourLevel] || T.fgFaint} />
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {/* Company */}
       {company && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Building2 className="w-5 h-5" />
-              About {companyName}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {companyDescription && (
-              <div className="prose prose-sm max-w-none dark:prose-invert">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {unesc(companyDescription)}
-                </ReactMarkdown>
-              </div>
-            )}
-            {companyUrl && (
-              <a href={companyUrl} target="_blank" rel="noopener noreferrer"
-                 className="text-primary hover:underline text-sm flex items-center gap-1 mt-2">
-                <ExternalLink className="w-3 h-3" />{companyUrl}
-              </a>
-            )}
-          </CardContent>
-        </Card>
+        <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 20 }}>
+          <h2 style={{ fontFamily: T.serif, fontSize: 18, color: T.fg, margin: '0 0 14px' }}>
+            About {companyName}
+          </h2>
+          {companyDescription && (
+            <div style={{ fontSize: 13, color: T.fgDim, lineHeight: 1.7 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                {unesc(companyDescription)}
+              </ReactMarkdown>
+            </div>
+          )}
+          {companyUrl && (
+            <a href={companyUrl} target="_blank" rel="noopener noreferrer"
+               style={{ fontFamily: T.mono, fontSize: 12, color: T.teal, textDecoration: 'underline', textUnderlineOffset: 3, marginTop: 8, display: 'inline-block' }}>
+              {companyUrl}
+            </a>
+          )}
+        </div>
       )}
 
       {/* Background Reading */}
       {backgroundReading.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BookOpen className="w-5 h-5" />
-              Background Reading
-              <Badge variant="secondary" className="ml-auto">{backgroundReading.length}</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-            {backgroundReading.map((col: any, idx: number) => {
-              const colName = getValue(col['collection-name']) || col['collection-name'];
-              const colDesc = getValue(col.description) || col.description;
-              return (
-                <div key={idx} className="p-3 rounded-lg bg-muted/50">
-                  <Link
-                    href={`/jobhunt/collection/${col['collection-id']}`}
-                    className="font-medium text-sm text-cyan-400 font-semibold underline underline-offset-2 hover:text-blue-400 transition-colors"
-                  >
-                    {colName}
-                  </Link>
-                  {colDesc && (
-                    <p className="text-xs text-muted-foreground mt-1">{colDesc}</p>
-                  )}
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
+        <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <h2 style={{ fontFamily: T.serif, fontSize: 18, color: T.fg, margin: 0 }}>Background Reading</h2>
+            <span style={{ fontFamily: T.mono, fontSize: 10, color: T.fgFaint, marginLeft: 'auto' }}>{backgroundReading.length}</span>
+          </div>
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {backgroundReading.map((col: any, idx: number) => {
+            const colName = getValue(col['collection-name']) || col['collection-name'];
+            const colDesc = getValue(col.description) || col.description;
+            return (
+              <div key={idx} style={{
+                padding: '8px 0',
+                borderTop: idx > 0 ? `1px solid ${T.borderDim}` : 'none',
+              }}>
+                <Link
+                  href={`/jobhunt/collection/${col['collection-id']}`}
+                  style={{ fontFamily: T.mono, fontSize: 12, color: T.teal, textDecoration: 'underline', textUnderlineOffset: 3 }}
+                >
+                  {colName}
+                </Link>
+                {colDesc && (
+                  <p style={{ fontSize: 12, color: T.fgDim, marginTop: 3 }}>{colDesc}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
 }
 
-// --- Note Pane ---
+/* ── Note Pane ── */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function NotePane({ note }: { note: any }) {
@@ -653,6 +697,7 @@ function NotePane({ note }: { note: any }) {
   const createdAt = getValue(note['created-at']);
   const noteName = getValue(note.name) || 'Untitled';
   const noteType = getNoteType(note);
+  const m = noteTypeMeta(noteType);
   const interactionType = getValue(note['alh-interaction-type']);
   const interactionDate = getValue(note['alh-interaction-date']);
   const interviewDate = getValue(note['jhunt-interview-date']);
@@ -660,41 +705,36 @@ function NotePane({ note }: { note: any }) {
   return (
     <div>
       {/* Note header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-          {NOTE_ICONS[noteType] || <FileText className="w-4 h-4" />}
-          <Badge variant="outline" className="text-xs capitalize">
-            {NOTE_LABELS[noteType] || noteType}
-          </Badge>
-          {interactionType && (
-            <Badge variant="secondary" className="text-xs">{interactionType}</Badge>
-          )}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <Chip label={m.short} color={m.color} />
+          {interactionType && <Chip label={interactionType} color={T.blue} />}
           {createdAt && (
-            <span className="flex items-center gap-1 ml-auto">
-              <Calendar className="w-3 h-3" />
+            <span style={{ fontFamily: T.mono, fontSize: 10, color: T.fgFaint, marginLeft: 'auto' }}>
               {formatDate(createdAt)}
             </span>
           )}
         </div>
-        <h2 className="text-xl font-semibold">{noteName}</h2>
+        <h2 style={{ fontFamily: T.serif, fontSize: 20, color: T.fg, margin: 0 }}>{noteName}</h2>
         {(interactionDate || interviewDate) && (
-          <p className="text-sm text-muted-foreground mt-1">
-            {interactionDate && <>Event date: {formatDate(interactionDate)}</>}
-            {interviewDate && <>Interview date: {formatDate(interviewDate)}</>}
+          <p style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint, marginTop: 4 }}>
+            {interactionDate && <>Event: {formatDate(interactionDate)}</>}
+            {interviewDate && <>Interview: {formatDate(interviewDate)}</>}
           </p>
         )}
       </div>
-      <Separator className="mb-6" />
+
+      <div style={{ borderTop: `1px solid ${T.borderDim}`, marginBottom: 20 }} />
 
       {/* Note content */}
       {content ? (
-        <div className="prose prose-sm max-w-none dark:prose-invert">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        <div style={{ fontSize: 13, color: T.fgDim, lineHeight: 1.7 }}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
             {unesc(content)}
           </ReactMarkdown>
         </div>
       ) : (
-        <p className="text-muted-foreground italic">No content</p>
+        <p style={{ fontFamily: T.mono, fontSize: 12, color: T.fgFaint, fontStyle: 'italic' }}>No content</p>
       )}
     </div>
   );
