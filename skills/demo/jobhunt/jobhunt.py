@@ -319,115 +319,158 @@ def extract_company_from_url(url: str) -> str:
 
 def cmd_ingest_job(args):
     """
-    Fetch job posting URL and store raw content as artifact.
+    Ingest a job position — from a URL or manually.
 
-    This implements the INGESTION phase of the curation pattern:
-    - Fetches URL content (raw, unedited)
-    - Stores as artifact with provenance
-    - Creates placeholder position entity
-    - Claude does the SENSEMAKING (extraction, analysis) separately
+    With --url: fetches the posting, stores raw content as artifact, creates position.
+    With --title (no URL): creates position manually without fetching.
 
-    NO parsing, NO extraction - just raw capture with provenance.
+    In both cases: links company, sets status, creates application note,
+    adds tags, links to seeker pipeline, and embeds into Qdrant.
     """
-    if not REQUESTS_AVAILABLE:
-        print(json.dumps({"success": False, "error": "requests/beautifulsoup4 not installed"}))
+    url = getattr(args, 'url', None)
+    title_arg = getattr(args, 'title', None)
+
+    if not url and not title_arg:
+        print(json.dumps({"success": False, "error": "Either --url or --title is required"}))
         return
 
-    url = args.url
-    title, content = fetch_url_content(url)
+    # --- URL fetch (if provided) ---
+    content = None
+    fetched_title = None
+    artifact_id = None
+    cache_result = None
 
-    if not content:
-        print(json.dumps({"success": False, "error": "Could not fetch URL content"}))
-        return
+    if url:
+        if not REQUESTS_AVAILABLE:
+            print(json.dumps({"success": False, "error": "requests/beautifulsoup4 not installed"}))
+            return
+        fetched_title, content = fetch_url_content(url)
+        if not content:
+            print(json.dumps({"success": False, "error": "Could not fetch URL content"}))
+            return
+        artifact_id = generate_id("artifact")
 
-    # Generate IDs
-    position_id = generate_id("position")
-    artifact_id = generate_id("artifact")
+    # --- Determine position name ---
+    position_name = title_arg or fetched_title or (f"Job posting from {url[:50]}" if url else "Untitled Position")
+
+    # --- Generate IDs ---
+    position_id = getattr(args, 'id', None) or generate_id("position")
     timestamp = get_timestamp()
 
-    # Use a placeholder name - Claude will extract the real title during sensemaking
-    placeholder_name = title if title else f"Job posting from {url[:50]}"
-
     with get_driver() as driver:
-        # Create position placeholder (Claude will update with extracted info)
+        # --- Create position entity ---
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             position_query = f'''insert $p isa jhunt-position,
                 has id "{position_id}",
-                has name "{escape_string(placeholder_name)}",
-                has jhunt-job-url "{escape_string(url)}",
+                has name "{escape_string(position_name)}",
                 has jhunt-opportunity-status "researching",
                 has created-at {timestamp}'''
 
+            if url:
+                position_query += f', has jhunt-job-url "{escape_string(url)}"'
             if args.priority:
                 position_query += f', has jhunt-priority-level "{args.priority}"'
+            if getattr(args, 'location', None):
+                position_query += f', has alh-location "{escape_string(args.location)}"'
+            if getattr(args, 'remote_policy', None):
+                position_query += f', has jhunt-remote-policy "{args.remote_policy}"'
+            if getattr(args, 'salary', None):
+                position_query += f', has jhunt-salary-range "{escape_string(args.salary)}"'
+            if getattr(args, 'deadline', None):
+                position_query += f", has jhunt-deadline {parse_date(args.deadline)}"
 
             position_query += ";"
             tx.query(position_query).resolve()
             tx.commit()
 
-        # Create job description artifact with content (inline or cached)
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            if CACHE_AVAILABLE and should_cache(content):
-                cache_result = save_to_cache(
-                    artifact_id=artifact_id,
-                    content=content,
-                    mime_type="text/html",
-                )
-                artifact_query = f'''insert $a isa jhunt-job-description,
-                    has id "{artifact_id}",
-                    has name "Job Description: {escape_string(placeholder_name)}",
-                    has cache-path "{cache_result['cache_path']}",
-                    has mime-type "text/html",
-                    has file-size {cache_result['file_size']},
-                    has content-hash "{cache_result['content_hash']}",
-                    has source-uri "{escape_string(url)}",
-                    has created-at {timestamp};'''
-            else:
-                artifact_query = f'''insert $a isa jhunt-job-description,
-                    has id "{artifact_id}",
-                    has name "Job Description: {escape_string(placeholder_name)}",
-                    has content "{escape_string(content)}",
-                    has source-uri "{escape_string(url)}",
-                    has created-at {timestamp};'''
-            tx.query(artifact_query).resolve()
-            tx.commit()
+        # --- Create artifact (URL mode only) ---
+        if url and content and artifact_id:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                if CACHE_AVAILABLE and should_cache(content):
+                    cache_result = save_to_cache(
+                        artifact_id=artifact_id,
+                        content=content,
+                        mime_type="text/html",
+                    )
+                    artifact_query = f'''insert $a isa jhunt-job-description,
+                        has id "{artifact_id}",
+                        has name "Job Description: {escape_string(position_name)}",
+                        has cache-path "{cache_result['cache_path']}",
+                        has mime-type "text/html",
+                        has file-size {cache_result['file_size']},
+                        has content-hash "{cache_result['content_hash']}",
+                        has source-uri "{escape_string(url)}",
+                        has created-at {timestamp};'''
+                else:
+                    artifact_query = f'''insert $a isa jhunt-job-description,
+                        has id "{artifact_id}",
+                        has name "Job Description: {escape_string(position_name)}",
+                        has content "{escape_string(content)}",
+                        has source-uri "{escape_string(url)}",
+                        has created-at {timestamp};'''
+                tx.query(artifact_query).resolve()
+                tx.commit()
 
-        # Link artifact to position
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            rep_query = f'''match
-                $a isa jhunt-job-description, has id "{artifact_id}";
-                $p isa jhunt-position, has id "{position_id}";
-            insert (alh-artifact: $a, referent: $p) isa alh-representation;'''
-            tx.query(rep_query).resolve()
-            tx.commit()
+            # Link artifact to position
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(f'''match
+                    $a isa jhunt-job-description, has id "{artifact_id}";
+                    $p isa jhunt-position, has id "{position_id}";
+                insert (alh-artifact: $a, referent: $p) isa alh-representation;''').resolve()
+                tx.commit()
 
-        # Create initial application note with researching status
+        # --- Link to company (find-or-create) ---
+        if getattr(args, 'company', None):
+            company_name = args.company.strip()
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                existing = list(tx.query(f'''match
+                    $c isa jhunt-company, has id $cid, has name $cn;
+                fetch {{ "id": $cid, "name": $cn }};''').resolve())
+
+                company_id_linked = None
+                for co in existing:
+                    if co["name"].lower() == company_name.lower():
+                        company_id_linked = co["id"]
+                        break
+
+                if not company_id_linked:
+                    company_id_linked = generate_id("company")
+                    tx.query(f'''insert $c isa jhunt-company,
+                        has id "{company_id_linked}",
+                        has name "{escape_string(company_name)}",
+                        has created-at {timestamp};''').resolve()
+
+                tx.query(f'''match
+                    $p isa jhunt-position, has id "{position_id}";
+                    $c isa jhunt-company, has id "{company_id_linked}";
+                insert (position: $p, employer: $c) isa jhunt-position-at-company;''').resolve()
+                tx.commit()
+
+        # --- Create initial application note ---
         app_note_id = generate_id("note")
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            note_query = f'''insert $n isa jhunt-application-note,
+            tx.query(f'''insert $n isa jhunt-application-note,
                 has id "{app_note_id}",
                 has name "Application Status",
                 has jhunt-application-status "researching",
-                has created-at {timestamp};'''
-            tx.query(note_query).resolve()
+                has created-at {timestamp};''').resolve()
             tx.commit()
 
-        # Link note to position
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            about_query = f'''match
+            tx.query(f'''match
                 $n isa alh-note, has id "{app_note_id}";
                 $p isa jhunt-position, has id "{position_id}";
-            insert (note: $n, subject: $p) isa alh-aboutness;'''
-            tx.query(about_query).resolve()
+            insert (note: $n, subject: $p) isa alh-aboutness;''').resolve()
             tx.commit()
 
-        # Add tags if specified
-        if args.tags:
+        # --- Add tags ---
+        if getattr(args, 'tags', None):
             for tag_name in args.tags:
                 tag_id = generate_id("tag")
                 with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-                    tag_check = f'match $t isa alh-tag, has name "{tag_name}"; fetch {{ "id": $t.id }};' 
-                    existing_tag = list(tx.query(tag_check).resolve())
+                    existing_tag = list(tx.query(
+                        f'match $t isa alh-tag, has name "{tag_name}"; fetch {{ "id": $t.id }};'
+                    ).resolve())
 
                 if not existing_tag:
                     with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
@@ -443,32 +486,33 @@ def cmd_ingest_job(args):
                     insert (tagged-entity: $p, tag: $t) isa alh-tagging;''').resolve()
                     tx.commit()
 
-    # Prepare output
+    # --- Prepare output ---
     output = {
         "success": True,
         "position_id": position_id,
-        "artifact_id": artifact_id,
-        "url": url,
-        "content_length": len(content),
-        "status": "raw",
-        "message": "Job posting ingested. Artifact stored - ask Claude to 'analyze this job posting' for sensemaking.",
+        "message": "Position created.",
     }
 
-    # Add cache info if applicable
-    if CACHE_AVAILABLE and should_cache(content):
-        output["storage"] = "cache"
-        output["cache_path"] = cache_result["cache_path"]
-    else:
-        output["storage"] = "inline"
+    if artifact_id:
+        output["artifact_id"] = artifact_id
+        output["url"] = url
+        output["content_length"] = len(content)
+        output["status"] = "raw"
+        output["message"] = "Job posting ingested. Artifact stored - ask Claude to 'analyze this job posting' for sensemaking."
+        if cache_result:
+            output["storage"] = "cache"
+            output["cache_path"] = cache_result["cache_path"]
+        else:
+            output["storage"] = "inline"
 
-    # Link to active job-seeker role
+    # --- Link to active job-seeker role ---
     try:
         with get_driver() as d:
             _link_opportunity_to_seeker(d, position_id)
     except Exception:
         pass  # seeker role may not exist yet
 
-    # Auto-embed into Qdrant so position appears on dashboard immediately
+    # --- Auto-embed into Qdrant ---
     try:
         import subprocess
         subprocess.run(
@@ -477,7 +521,7 @@ def cmd_ingest_job(args):
             timeout=30,
         )
     except Exception:
-        pass  # embedding is non-critical; dashboard will pick it up on next manual embed
+        pass  # embedding is non-critical
 
     print(json.dumps(output, indent=2))
 
@@ -512,95 +556,15 @@ def cmd_add_company(args):
 
 
 def cmd_add_position(args):
-    """Add a position manually."""
-    position_id = args.id or generate_id("position")
-    timestamp = get_timestamp()
-
-    query = f'''insert $p isa jhunt-position,
-        has id "{position_id}",
-        has name "{escape_string(args.title)}",
-        has created-at {timestamp}'''
-
-    if args.url:
-        query += f', has jhunt-job-url "{escape_string(args.url)}"'
-    if args.location:
-        query += f', has alh-location "{escape_string(args.location)}"'
-    if args.jhunt_remote_policy:
-        query += f', has jhunt-remote-policy "{args.jhunt_remote_policy}"'
-    if args.salary:
-        query += f', has jhunt-salary-range "{escape_string(args.salary)}"'
-    if args.jhunt_team_size:
-        query += f', has jhunt-team-size "{escape_string(args.jhunt_team_size)}"'
-    if args.priority:
-        query += f', has jhunt-priority-level "{args.priority}"'
-    if args.deadline:
-        query += f", has jhunt-deadline {parse_date(args.deadline)}"
-
-    query += ";"
-
-    app_note_id = generate_id("note")
-
-    with get_driver() as driver:
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(query).resolve()
-            tx.commit()
-
-        # Link to company (match by name, create if not found)
-        if args.company:
-            company_name = args.company.strip()
-            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-                # Look up existing company by name
-                existing = list(tx.query(f'''match
-                    $c isa jhunt-company, has id $cid, has name $cn;
-                fetch {{ "id": $cid, "name": $cn }};''').resolve())
-
-                # Case-insensitive exact match
-                company_id_linked = None
-                for co in existing:
-                    if co["name"].lower() == company_name.lower():
-                        company_id_linked = co["id"]
-                        break
-
-                if not company_id_linked:
-                    # Create new company
-                    company_id_linked = generate_id("company")
-                    tx.query(f'''insert $c isa jhunt-company,
-                        has id "{company_id_linked}",
-                        has name "{escape_string(company_name)}",
-                        has created-at {timestamp};''').resolve()
-
-                # Create jhunt-position-at-company relation
-                tx.query(f'''match
-                    $p isa jhunt-position, has id "{position_id}";
-                    $c isa jhunt-company, has id "{company_id_linked}";
-                insert (position: $p, employer: $c) isa jhunt-position-at-company;''').resolve()
-                tx.commit()
-
-        # Create initial application note
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            note_query = f'''insert $n isa jhunt-application-note,
-                has id "{app_note_id}",
-                has name "Application Status",
-                has jhunt-application-status "researching",
-                has created-at {timestamp};'''
-            tx.query(note_query).resolve()
-            tx.commit()
-
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            about_query = f'''match
-                $n isa alh-note, has id "{app_note_id}";
-                $p isa jhunt-position, has id "{position_id}";
-            insert (note: $n, subject: $p) isa alh-aboutness;'''
-            tx.query(about_query).resolve()
-            tx.commit()
-
-    # Link to active job-seeker role
-    try:
-        _link_opportunity_to_seeker(driver, position_id)
-    except Exception:
-        pass
-
-    print(json.dumps({"success": True, "position_id": position_id, "title": args.title}))
+    """Deprecated — redirects to ingest-job."""
+    # Map add-position args to ingest-job args
+    args.url = getattr(args, 'url', None)
+    args.tags = None
+    args.remote_policy = getattr(args, 'jhunt_remote_policy', None)
+    if not args.url and not getattr(args, 'title', None):
+        print(json.dumps({"success": False, "error": "Either --url or --title is required"}))
+        return
+    cmd_ingest_job(args)
 
 
 def cmd_update_status(args):
@@ -3162,11 +3126,17 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # ingest-job
-    p = subparsers.add_parser("ingest-job", help="Fetch and parse a job posting URL")
-    p.add_argument("--url", required=True, help="Job posting URL")
-    p.add_argument("--company", help="Override company name")
+    p = subparsers.add_parser("ingest-job", help="Ingest a job posting (from URL or manual)")
+    p.add_argument("--url", help="Job posting URL (omit for manual entry)")
+    p.add_argument("--title", help="Position title (required if no --url)")
+    p.add_argument("--company", help="Company name (matched to existing or created)")
     p.add_argument("--priority", choices=["high", "medium", "low"], help="Priority level")
     p.add_argument("--tags", nargs="+", help="Tags to apply")
+    p.add_argument("--location", help="Job location")
+    p.add_argument("--remote-policy", dest="remote_policy", choices=["remote", "hybrid", "onsite"], help="Remote policy")
+    p.add_argument("--salary", help="Salary range")
+    p.add_argument("--deadline", help="Application deadline (YYYY-MM-DD)")
+    p.add_argument("--id", help="Specific position ID")
 
     # add-company
     p = subparsers.add_parser("add-company", help="Add a company")
@@ -3177,15 +3147,14 @@ def main():
     p.add_argument("--location", help="Headquarters location")
     p.add_argument("--id", help="Specific ID")
 
-    # add-position
-    p = subparsers.add_parser("add-position", help="Add a position manually")
+    # add-position (deprecated — use ingest-job instead)
+    p = subparsers.add_parser("add-position", help="[deprecated] Use ingest-job instead")
     p.add_argument("--title", required=True, help="Position title")
-    p.add_argument("--company", help="Company name (matched to existing or created)")
+    p.add_argument("--company", help="Company name")
     p.add_argument("--url", help="Job posting URL")
     p.add_argument("--location", help="Job location")
     p.add_argument("--jhunt-remote-policy", choices=["remote", "hybrid", "onsite"], help="Remote policy")
     p.add_argument("--salary", help="Salary range")
-    p.add_argument("--jhunt-team-size", help="Team size")
     p.add_argument("--priority", choices=["high", "medium", "low"], help="Priority level")
     p.add_argument("--deadline", help="Application deadline (YYYY-MM-DD)")
     p.add_argument("--id", help="Specific ID")
