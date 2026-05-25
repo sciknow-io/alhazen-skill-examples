@@ -355,6 +355,7 @@ def cmd_ingest_job(args):
                 has id "{position_id}",
                 has name "{escape_string(placeholder_name)}",
                 has jhunt-job-url "{escape_string(url)}",
+                has jhunt-opportunity-status "researching",
                 has created-at {timestamp}'''
 
             if args.priority:
@@ -466,6 +467,17 @@ def cmd_ingest_job(args):
             _link_opportunity_to_seeker(d, position_id)
     except Exception:
         pass  # seeker role may not exist yet
+
+    # Auto-embed into Qdrant so position appears on dashboard immediately
+    try:
+        import subprocess
+        subprocess.run(
+            ["uv", "run", "python", os.path.join(os.path.dirname(__file__), "embedding_map.py"), "embed"],
+            capture_output=True, cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            timeout=30,
+        )
+    except Exception:
+        pass  # embedding is non-critical; dashboard will pick it up on next manual embed
 
     print(json.dumps(output, indent=2))
 
@@ -638,6 +650,20 @@ def cmd_update_status(args):
                 $p isa jhunt-position, has id "{args.position}";
             insert (note: $n, subject: $p) isa alh-aboutness;'''
             tx.query(about_query).resolve()
+            tx.commit()
+
+        # Update status attribute on the position entity itself
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            # Remove old status attribute if present
+            try:
+                tx.query(
+                    f'match $p isa jhunt-position, has id "{args.position}", has jhunt-opportunity-status $old; delete has $old of $p;'
+                ).resolve()
+            except Exception:
+                pass  # no existing status attribute
+            tx.query(
+                f'match $p isa jhunt-position, has id "{args.position}"; insert $p has jhunt-opportunity-status "{args.status}";'
+            ).resolve()
             tx.commit()
 
     print(
@@ -1574,15 +1600,21 @@ def cmd_list_opportunities(args):
                 oid = r.get("id", "")
                 if not oid:
                     continue
-                company_q = f'''match
-                    $o isa jhunt-opportunity, has id "{oid}";
-                    (opportunity: $o, organization: $c) isa jhunt-opportunity-at-organization;
-                fetch {{ "name": $c.name }};'''
-                try:
-                    company_results = list(tx.query(company_q).resolve())
-                    r["company"] = company_results[0].get("name", "") if company_results else ""
-                except Exception:
-                    r["company"] = ""
+                # Try both company relation types (positions use position-at-company,
+                # other opportunity types use opportunity-at-organization)
+                company_name = ""
+                for cq in [
+                    f'match $o has id "{oid}"; (opportunity: $o, organization: $c) isa jhunt-opportunity-at-organization; fetch {{ "name": $c.name }};',
+                    f'match $o has id "{oid}"; (position: $o, employer: $c) isa jhunt-position-at-company; fetch {{ "name": $c.name }};',
+                ]:
+                    try:
+                        cresults = list(tx.query(cq).resolve())
+                        if cresults:
+                            company_name = cresults[0].get("name", "")
+                            break
+                    except Exception:
+                        continue
+                r["company"] = company_name
 
     opportunities = []
     for r in results:
