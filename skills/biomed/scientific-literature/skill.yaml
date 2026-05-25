@@ -6,7 +6,10 @@ description: >
   embed and semantically search with Voyage AI + Qdrant.
 author: Alhazen Contributors
 license: Apache-2.0
-schema: schema.tql
+typedb_schema: schema.tql
+schema:
+  namespace: scilit
+  depends_on: []
 cli: scientific_literature.py
 tags: [literature, pubmed, epmc, openalex, biorxiv, ingestion, semantic-search]
 requires:
