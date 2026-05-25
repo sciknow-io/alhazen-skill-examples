@@ -23,7 +23,6 @@ attribute jhunt-remote-policy, value string;
 attribute jhunt-team-size, value string;
 
 # Application tracking
-attribute jhunt-application-status, value string;
 attribute jhunt-applied-date, value datetime;
 attribute jhunt-interview-date, value datetime;
 attribute jhunt-deadline, value datetime;
@@ -32,10 +31,10 @@ attribute jhunt-response-date, value datetime;
 # Opportunity model attributes
 attribute jhunt-opportunity-status, value string;
 # Per-type status values:
+#   position: researching, applied, phone-screen, interviewing, offer, rejected, withdrawn
 #   engagement: proposal, active, paused, closed
 #   venture: seed, series-a, series-b, growth, closed
 #   lead: first-contact, active, inactive, closed
-# (positions use jhunt-application-status on jhunt-application-note instead)
 attribute jhunt-engagement-type, value string;      # hourly | project | retainer | advisory
 attribute jhunt-rate-info, value string;            # free text: "$X/hr", "TBD", "equity only"
 attribute jhunt-venture-stage, value string;        # exploring | proposal-sent | negotiating | active | paused | closed
@@ -224,6 +223,8 @@ entity jhunt-company sub alh-organization,
 # JHUNT-OPPORTUNITY - Base supertype for all trackable career opportunities
 entity jhunt-opportunity sub alh-domain-thing,
     owns jhunt-opportunity-status,
+    owns jhunt-applied-date,
+    owns jhunt-response-date,
     owns jhunt-priority-level,
     owns jhunt-deadline,
     plays jhunt-opportunity-at-organization:opportunity,
@@ -300,11 +301,6 @@ entity jhunt-qualification sub alh-fragment;
 # -----------------------------------------------------------------------------
 # ENTITY TYPES - Job Hunting Notes
 # -----------------------------------------------------------------------------
-
-entity jhunt-application-note sub alh-note,
-    owns jhunt-application-status,
-    owns jhunt-applied-date,
-    owns jhunt-response-date;
 
 entity jhunt-research-note sub alh-note;
 

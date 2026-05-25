@@ -324,7 +324,7 @@ def cmd_ingest_job(args):
     With --url: fetches the posting, stores raw content as artifact, creates position.
     With --title (no URL): creates position manually without fetching.
 
-    In both cases: links company, sets status, creates application note,
+    In both cases: links company, sets initial status,
     adds tags, links to seeker pipeline, and embeds into Qdrant.
     """
     url = getattr(args, 'url', None)
@@ -446,21 +446,10 @@ def cmd_ingest_job(args):
                 insert (position: $p, employer: $c) isa jhunt-position-at-company;''').resolve()
                 tx.commit()
 
-        # --- Create initial application note ---
-        app_note_id = generate_id("note")
+        # --- Set initial opportunity status ---
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'''insert $n isa jhunt-application-note,
-                has id "{app_note_id}",
-                has name "Application Status",
-                has jhunt-application-status "researching",
-                has created-at {timestamp};''').resolve()
-            tx.commit()
-
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'''match
-                $n isa alh-note, has id "{app_note_id}";
-                $p isa jhunt-position, has id "{position_id}";
-            insert (note: $n, subject: $p) isa alh-aboutness;''').resolve()
+            tx.query(f'''match $p isa jhunt-position, has id "{position_id}";
+            insert $p has jhunt-opportunity-status "researching";''').resolve()
             tx.commit()
 
         # --- Add tags ---
@@ -569,65 +558,31 @@ def cmd_add_position(args):
 
 def cmd_update_status(args):
     """Update application status for a position."""
-    timestamp = get_timestamp()
-    note_id = generate_id("note")
 
     with get_driver() as driver:
-        # Find existing application note
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            find_query = f'''match
-                $p isa jhunt-position, has id "{args.position}";
-                (note: $n, subject: $p) isa alh-aboutness;
-                $n isa jhunt-application-note;
-            fetch {{ "id": $n.id }};'''
-            existing = list(tx.query(find_query).resolve())
-
-        if existing:
-            # Delete old application note
-            old_note_id = existing[0].get("id", "")
-            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-                tx.query(
-                    f'match $n isa alh-note, has id "{old_note_id}"; delete $n;'
-                ).resolve()
-                tx.commit()
-
-        # Create new application note with updated status
-        note_query = f'''insert $n isa jhunt-application-note,
-            has id "{note_id}",
-            has name "Application Status",
-            has jhunt-application-status "{args.status}",
-            has created-at {timestamp}'''
-
-        if args.date:
-            note_query += f", has jhunt-applied-date {parse_date(args.date)}"
-
-        note_query += ";"
-
+        # Update status attribute directly on the position
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(note_query).resolve()
-            tx.commit()
-
-        # Link to position
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            about_query = f'''match
-                $n isa alh-note, has id "{note_id}";
-                $p isa jhunt-position, has id "{args.position}";
-            insert (note: $n, subject: $p) isa alh-aboutness;'''
-            tx.query(about_query).resolve()
-            tx.commit()
-
-        # Update status attribute on the position entity itself
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            # Remove old status attribute if present
+            # Remove old status if present
             try:
                 tx.query(
                     f'match $p isa jhunt-position, has id "{args.position}", has jhunt-opportunity-status $old; delete has $old of $p;'
                 ).resolve()
             except Exception:
-                pass  # no existing status attribute
+                pass
             tx.query(
                 f'match $p isa jhunt-position, has id "{args.position}"; insert $p has jhunt-opportunity-status "{args.status}";'
             ).resolve()
+            # Set applied date if provided
+            if args.date:
+                try:
+                    tx.query(
+                        f'match $p isa jhunt-position, has id "{args.position}", has jhunt-applied-date $old; delete has $old of $p;'
+                    ).resolve()
+                except Exception:
+                    pass
+                tx.query(
+                    f'match $p isa jhunt-position, has id "{args.position}"; insert $p has jhunt-applied-date {parse_date(args.date)};'
+                ).resolve()
             tx.commit()
 
     print(
@@ -636,7 +591,6 @@ def cmd_update_status(args):
                 "success": True,
                 "position_id": args.position,
                 "status": args.status,
-                "note_id": note_id,
             }
         )
     )
@@ -704,7 +658,6 @@ def cmd_add_note(args):
         "skill-gap": "jhunt-skill-gap-note",
         "fit-analysis": "jhunt-fit-analysis-note",
         "interaction": "jhunt-interaction-note",
-        "application": "jhunt-application-note",
         "opp-summary": "jhunt-opp-summary-note",
         "general": "note",
     }
@@ -878,23 +831,12 @@ def cmd_regenerate_summary(args):
                     pass
 
             # Status
-            if opp_meta["type"] == "position":
-                try:
-                    s = list(tx.query(f'''match $o isa {otype_full}, has id "{opp_id}";
-                        (note: $n, subject: $o) isa alh-aboutness;
-                        $n isa jhunt-application-note, has jhunt-application-status $s;
-                    fetch {{ "s": $s }};''').resolve())
-                    if s:
-                        opp_meta["status"] = s[0]["s"]
-                except:
-                    pass
-            else:
-                try:
-                    s = list(tx.query(f'match $o isa {otype_full}, has id "{opp_id}", has jhunt-opportunity-status $s; fetch {{ "s": $s }};').resolve())
-                    if s:
-                        opp_meta["status"] = s[0]["s"]
-                except:
-                    pass
+            try:
+                s = list(tx.query(f'match $o isa {otype_full}, has id "{opp_id}", has jhunt-opportunity-status $s; fetch {{ "s": $s }};').resolve())
+                if s:
+                    opp_meta["status"] = s[0]["s"]
+            except:
+                pass
 
             # Company
             try:
@@ -916,7 +858,6 @@ def cmd_regenerate_summary(args):
                 ("jhunt-fit-analysis-note", "fit-analysis"),
                 ("jhunt-strategy-note", "strategy"),
                 ("jhunt-skill-gap-note", "skill-gap"),
-                ("jhunt-application-note", "application"),
                 ("jhunt-interview-note", "interview"),
                 ("jhunt-interaction-note", "interaction"),
                 ("jhunt-opp-summary-note", "current-summary"),
@@ -1603,11 +1544,9 @@ def cmd_list_pipeline(args):
     """List positions in the pipeline."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            # Build query - fetch positions with their application status
+            # Build query - fetch positions with their status
             match_clause = """match
-                    $p isa jhunt-position;
-                    (note: $n, subject: $p) isa alh-aboutness;
-                    $n isa jhunt-application-note, has jhunt-application-status $status;"""
+                    $p isa jhunt-position, has jhunt-opportunity-status $status;"""
 
             if hasattr(args, 'person') and args.person:
                 match_clause += f'''
@@ -1617,14 +1556,15 @@ def cmd_list_pipeline(args):
 
             if args.status:
                 match_clause = match_clause.replace(
-                    "has jhunt-application-status $status", f'has jhunt-application-status "{args.status}"'
+                    "has jhunt-opportunity-status $status", f'has jhunt-opportunity-status "{args.status}"'
                 )
 
             if args.priority:
                 match_clause += f'\n                    $p has jhunt-priority-level "{args.priority}";'
 
-            query = match_clause + """
-                fetch {
+            fetch_status = "$status" if not args.status else f'"{args.status}"'
+            query = match_clause + f"""
+                fetch {{
                     "id": $p.id,
                     "name": $p.name,
                     "jhunt-short-name": $p.jhunt-short-name,
@@ -1633,8 +1573,8 @@ def cmd_list_pipeline(args):
                     "jhunt-remote-policy": $p.jhunt-remote-policy,
                     "jhunt-salary-range": $p.jhunt-salary-range,
                     "jhunt-priority-level": $p.jhunt-priority-level,
-                    "status": $n.jhunt-application-status
-                };"""
+                    "status": $p.jhunt-opportunity-status
+                }};"""
 
             results = list(tx.query(query).resolve())
 
@@ -1721,7 +1661,6 @@ def cmd_show_position(args):
             # Query each note subtype separately so we can return type
             # labels and type-specific attributes for the dashboard
             NOTE_TYPE_ATTRS = {
-                "jhunt-application-note": ["id", "name", "content", "created-at", "jhunt-application-status", "jhunt-applied-date", "jhunt-response-date"],
                 "jhunt-fit-analysis-note": ["id", "name", "content", "created-at", "jhunt-fit-score", "jhunt-fit-summary"],
                 "jhunt-interview-note": ["id", "name", "content", "created-at", "jhunt-interview-date"],
                 "jhunt-interaction-note": ["id", "name", "content", "created-at", "alh-interaction-type", "alh-interaction-date"],
@@ -1885,8 +1824,7 @@ def cmd_show_gaps(args):
             req_query = f"""match
                 $r isa jhunt-requirement, has jhunt-skill-name $sn, has jhunt-skill-level $sl;
                 (requirement: $r, position: $p) isa jhunt-requirement-for;
-                (note: $n, subject: $p) isa alh-aboutness;
-                $n isa jhunt-application-note, has jhunt-application-status $status;{status_filter}
+                $p has jhunt-opportunity-status $status;{status_filter}
             fetch {{
                 "skill": $sn, "level": $sl,
                 "pos-id": $p.id, "pos-name": $p.name
@@ -2604,7 +2542,6 @@ def cmd_list_artifacts(args):
                     $a isa jhunt-job-description, has id "{artifact_id}";
                     (alh-artifact: $a, referent: $p) isa alh-representation;
                     (note: $n, subject: $p) isa alh-aboutness;
-                    not {{ $n isa jhunt-application-note; }};
                 fetch {{ "id": $n.id }};'''
 
                 try:
@@ -2813,69 +2750,37 @@ PRIORITY_EMOJI = {
 
 
 def _fetch_pipeline_data():
-    """Fetch all pipeline data: positions with status from application notes."""
+    """Fetch all pipeline data: positions with status."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            # Get positions with status from application notes
             query = """
-                match
-                $p isa jhunt-position;
-                (note: $n, subject: $p) isa alh-aboutness;
-                $n isa jhunt-application-note, has jhunt-application-status $status;
+                match $p isa jhunt-position, has jhunt-opportunity-status $status;
                 fetch {
                     "id": $p.id,
                     "name": $p.name,
                     "jhunt-short-name": $p.jhunt-short-name,
                     "jhunt-job-url": $p.jhunt-job-url,
                     "jhunt-priority-level": $p.jhunt-priority-level,
-                    "status": $n.jhunt-application-status
+                    "status": $status
                 };
             """
             results = list(tx.query(query).resolve())
 
-            # Also get positions WITHOUT application notes (still researching)
-            all_pos_query = """
-                match $p isa jhunt-position;
-                fetch {
-                    "id": $p.id,
-                    "name": $p.name,
-                    "jhunt-short-name": $p.jhunt-short-name,
-                    "jhunt-job-url": $p.jhunt-job-url,
-                    "jhunt-priority-level": $p.jhunt-priority-level
-                };
-            """
-            all_positions = list(tx.query(all_pos_query).resolve())
-
-    # Extract positions with status (3.x returns plain dicts)
-    tracked = {}
+    positions = []
     for r in results:
         pid = r.get("id", "")
         if not pid:
             continue
-        tracked[pid] = {
+        positions.append({
             "id": pid,
             "name": r.get("name", ""),
             "short_name": r.get("jhunt-short-name", ""),
             "priority": r.get("jhunt-priority-level", ""),
             "url": r.get("jhunt-job-url", ""),
             "status": r.get("status", "researching"),
-        }
+        })
 
-    # Add untracked positions as "researching"
-    for r in all_positions:
-        pid = r.get("id", "")
-        if not pid or pid in tracked:
-            continue
-        tracked[pid] = {
-            "id": pid,
-            "name": r.get("name", ""),
-            "short_name": r.get("jhunt-short-name", ""),
-            "priority": r.get("jhunt-priority-level", ""),
-            "url": r.get("jhunt-job-url", ""),
-            "status": "researching",
-        }
-
-    return list(tracked.values())
+    return positions
 
 
 def cmd_report_pipeline(args):
@@ -2956,24 +2861,22 @@ def cmd_report_position(args):
             except Exception:
                 all_notes = []
 
-            # Get application status from application note
+            # Get opportunity status directly from position
             status_query = f"""
                 match
-                $p isa jhunt-position, has id "{pid}";
-                $n isa jhunt-application-note;
-                (subject: $p, note: $n) isa alh-aboutness;
-                fetch {{ "status": $n.jhunt-application-status }};
+                $p isa jhunt-position, has id "{pid}", has jhunt-opportunity-status $s;
+                fetch {{ "status": $s }};
             """
             try:
                 status_results = list(tx.query(status_query).resolve())
                 if status_results:
-                    attrs["jhunt-application-status"] = status_results[0].get("status")
+                    attrs["jhunt-opportunity-status"] = status_results[0].get("status")
             except Exception:
                 pass
 
     # Build markdown
     title = attrs.get("jhunt-short-name") or attrs.get("name", pid)
-    status = attrs.get("jhunt-application-status", "unknown")
+    status = attrs.get("jhunt-opportunity-status", "unknown")
     status_emoji = STATUS_EMOJI.get(status, "•")
 
     lines = [f"**{title}**", ""]

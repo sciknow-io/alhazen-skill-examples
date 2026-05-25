@@ -47,7 +47,6 @@ const T = {
 
 /* ── Note type config ── */
 const NOTE_TYPES: Record<string, { label: string; short: string; color: string }> = {
-  'jhunt-application-note': { label: 'Application', short: 'APP', color: '#5aadaf' },
   'jhunt-research-note': { label: 'Research', short: 'RES', color: '#8ba4b8' },
   'jhunt-fit-analysis-note': { label: 'Fit analysis', short: 'FIT', color: '#62c4bc' },
   'jhunt-interview-note': { label: 'Interview', short: 'INT', color: '#5b8ab8' },
@@ -420,6 +419,17 @@ export default function OpportunityDossierPage({ params }: OpportunityPageProps)
                       <span style={{ fontFamily: T.sans, fontSize: 13, fontWeight: 600, color: T.fg }}>
                         {note.name}
                       </span>
+                    )}
+                    {note.id && (
+                      <a
+                        href={`/agentic-memory?entity=${note.id}`}
+                        style={{ fontFamily: T.mono, fontSize: 10, color: T.teal, textDecoration: 'none', opacity: 0.6, transition: 'opacity 0.15s' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; }}
+                        title="View in Knowledge Graph"
+                      >
+                        graph &rarr;
+                      </a>
                     )}
                     {note['created-at'] && (
                       <span style={{ fontFamily: T.mono, fontSize: 10, color: T.fgFaint, marginLeft: 'auto' }}>

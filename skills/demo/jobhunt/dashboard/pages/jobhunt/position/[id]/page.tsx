@@ -302,9 +302,7 @@ export default function PositionPage({ params }: PositionPageProps) {
   const companyUrl = getValue(company?.['alh-company-url']);
   const companyDescription = getValue(company?.description);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const statusNote = notes.find((n: any) => getNoteType(n) === 'application');
-  const status = getValue(statusNote?.['jhunt-application-status']) || 'researching';
+  const status = getValue(position?.['jhunt-opportunity-status']) || 'researching';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fitNote = notes.find((n: any) => getNoteType(n) === 'fit-analysis');
@@ -709,6 +707,15 @@ function NotePane({ note }: { note: any }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <Chip label={m.short} color={m.color} />
           {interactionType && <Chip label={interactionType} color={T.blue} />}
+          <a
+            href={`/agentic-memory?entity=${note.id}`}
+            style={{ fontFamily: T.mono, fontSize: 10, color: T.teal, textDecoration: 'none', opacity: 0.6, transition: 'opacity 0.15s' }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; }}
+            title="View in Knowledge Graph"
+          >
+            graph &rarr;
+          </a>
           {createdAt && (
             <span style={{ fontFamily: T.mono, fontSize: 10, color: T.fgFaint, marginLeft: 'auto' }}>
               {formatDate(createdAt)}

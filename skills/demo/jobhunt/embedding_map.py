@@ -86,22 +86,13 @@ def fetch_opportunities():
                     except:
                         pass
 
-                # Get status: jhunt-application-status from note (positions) or jhunt-opportunity-status from entity
+                # Get status: jhunt-opportunity-status directly from entity
                 try:
-                    if otype == "jhunt-position":
-                        status_r = list(tx.query(f'''match
-                            $o isa {otype}, has id "{oid}";
-                            (note: $n, subject: $o) isa alh-aboutness;
-                            $n isa jhunt-application-note, has jhunt-application-status $s;
-                        fetch {{ "status": $s }};''').resolve())
-                        if status_r:
-                            extras["status"] = status_r[0]["status"]
-                    else:
-                        status_r = list(tx.query(f'''match
-                            $o isa {otype}, has id "{oid}", has jhunt-opportunity-status $s;
-                        fetch {{ "status": $s }};''').resolve())
-                        if status_r:
-                            extras["status"] = status_r[0]["status"]
+                    status_r = list(tx.query(f'''match
+                        $o isa {otype}, has id "{oid}", has jhunt-opportunity-status $s;
+                    fetch {{ "status": $s }};''').resolve())
+                    if status_r:
+                        extras["status"] = status_r[0]["status"]
                 except:
                     pass
 
@@ -338,20 +329,12 @@ def cmd_map(args):
                             meta[key] = str(r[0]["v"]) if attr == "created-at" else r[0]["v"]
                     except:
                         pass
-                # Status: jhunt-application-status from note (positions) or jhunt-opportunity-status from entity
+                # Status: jhunt-opportunity-status directly from entity
                 try:
-                    if otype == "jhunt-position":
-                        s = list(tx_m.query(f'''match $o isa {otype}, has id "{oid}";
-                            (note: $n, subject: $o) isa alh-aboutness;
-                            $n isa jhunt-application-note, has jhunt-application-status $s;
-                        fetch {{ "s": $s }};''').resolve())
-                        if s:
-                            meta["status"] = s[0]["s"]
-                    else:
-                        s = list(tx_m.query(f'''match $o isa {otype}, has id "{oid}", has jhunt-opportunity-status $s;
-                        fetch {{ "s": $s }};''').resolve())
-                        if s:
-                            meta["status"] = s[0]["s"]
+                    s = list(tx_m.query(f'''match $o isa {otype}, has id "{oid}", has jhunt-opportunity-status $s;
+                    fetch {{ "s": $s }};''').resolve())
+                    if s:
+                        meta["status"] = s[0]["s"]
                 except:
                     pass
                 # Company

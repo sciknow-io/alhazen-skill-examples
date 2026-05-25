@@ -4,27 +4,21 @@ label: "Position"
 label_plural: "Positions"
 url_path: /jobhunt/position/[id]
 nav_parent: hub
-notes: >
-  application-status is not a direct attribute on jobhunt-position -- it lives on
-  jobhunt-application-note attached via aboutness. The page extracts it from there.
-  The notes_group in side_column excludes application and fit-analysis because
-  those have dedicated special_panel widgets elsewhere.
-  fit-score in quick_info is derived from jobhunt-fit-analysis-note.
 
 browse:
   label_field: name
   subtitle_field: short-name
-  status_field: application-status   # derived from jobhunt-application-note via aboutness
+  status_field: opportunity-status
   status_values:
     [researching, applied, phone-screen, interviewing, offer, rejected, withdrawn]
   sort_default: name
-  filter_axis: application-status
+  filter_axis: opportunity-status
 
 detail:
   header:
     title_field: name
     subtitle_portal: company
-    status_field: application-status
+    status_field: opportunity-status
     priority_field: priority-level
     external_url_field: job-url
   quick_info:
@@ -54,7 +48,7 @@ detail:
     - kind: notes_group
       via_relation: aboutness
       via_role: subject
-      notes_exclude: [application, fit-analysis]
+      notes_exclude: [fit-analysis]
       show_type_icons: true
       collapsible: false
     - kind: artifact_detail

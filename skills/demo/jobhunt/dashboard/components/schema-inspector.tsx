@@ -32,7 +32,6 @@ const ENTITIES = [
     { name: 'jhunt-lead', parent: 'jhunt-opportunity', attrs: 'id, name, status, source' },
   ]},
   { cat: 'Note types', items: [
-    { name: 'jhunt-application-note', parent: 'note', attrs: 'id, content, created-at' },
     { name: 'jhunt-research-note', parent: 'note', attrs: 'id, content, created-at' },
     { name: 'jhunt-fit-analysis-note', parent: 'note', attrs: 'id, content, created-at' },
     { name: 'jhunt-interview-note', parent: 'note', attrs: 'id, content, created-at' },

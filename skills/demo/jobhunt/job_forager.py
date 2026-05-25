@@ -1724,23 +1724,10 @@ def cmd_promote(args):
             tx.query(pos_query).resolve()
             tx.commit()
 
-        # Create initial application note
-        note_id = generate_id("note")
+        # Set initial opportunity status
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            note_query = f'''insert $n isa jhunt-application-note,
-                has id "{note_id}",
-                has name "Application Status",
-                has jhunt-application-status "researching",
-                has created-at {timestamp};'''
-            tx.query(note_query).resolve()
-            tx.commit()
-
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            about_query = f'''match
-                $n isa alh-note, has id "{note_id}";
-                $p isa jhunt-position, has id "{position_id}";
-            insert (note: $n, subject: $p) isa alh-aboutness;'''
-            tx.query(about_query).resolve()
+            tx.query(f'''match $p isa jhunt-position, has id "{position_id}";
+            insert $p has jhunt-opportunity-status "researching";''').resolve()
             tx.commit()
 
         # Update candidate status to "promoted"
