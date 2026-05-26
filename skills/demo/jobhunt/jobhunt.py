@@ -1638,6 +1638,7 @@ def cmd_show_position(args):
                 "jhunt-salary-range": $p.jhunt-salary-range,
                 "jhunt-team-size": $p.jhunt-team-size,
                 "jhunt-priority-level": $p.jhunt-priority-level,
+                "jhunt-opportunity-status": $p.jhunt-opportunity-status,
                 "deadline": $p.jhunt-deadline
             }};'''
             pos_result = list(tx.query(pos_query).resolve())
