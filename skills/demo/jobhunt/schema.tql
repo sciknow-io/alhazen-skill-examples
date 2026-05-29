@@ -87,6 +87,10 @@ attribute jhunt-search-query, value string;
 attribute jhunt-search-location, value string;
 attribute jhunt-triage-reason, value string;
 
+# Opportunity linkage attributes
+attribute jhunt-link-type, value string;
+# Values: referral, collaborator, introduced-by, evolved-into, spin-off, advisor, related-to
+
 
 # -----------------------------------------------------------------------------
 # RELATION TYPES - defined before entities so role names resolve in plays clauses
@@ -144,6 +148,15 @@ relation jhunt-contact-for-opportunity,
     owns jhunt-contact-role,
     relates contact,
     relates opportunity;
+
+# OPPORTUNITY-LINK - Links opportunities together (lead->venture, lead->position, etc.)
+relation jhunt-opportunity-link,
+    relates source,
+    relates target,
+    owns jhunt-link-type,
+    owns description,
+    owns created-at,
+    owns confidence;
 
 # -----------------------------------------------------------------------------
 # ENTITY TYPES - Job Hunting Collections
@@ -229,7 +242,9 @@ entity jhunt-opportunity sub alh-domain-thing,
     owns jhunt-deadline,
     plays jhunt-opportunity-at-organization:opportunity,
     plays jhunt-seeker-pipeline:opportunity,
-    plays jhunt-contact-for-opportunity:opportunity;
+    plays jhunt-contact-for-opportunity:opportunity,
+    plays jhunt-opportunity-link:source,
+    plays jhunt-opportunity-link:target;
 
 # JHUNT-POSITION - A specific role/job posting (formal employment application)
 entity jhunt-position sub jhunt-opportunity,
