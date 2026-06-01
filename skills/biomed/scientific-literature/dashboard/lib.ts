@@ -119,6 +119,41 @@ export interface FacetingNoteDetail {
   content?: string;
 }
 
+export interface InvestigationCorpusRef {
+  id: string;
+  name?: string;
+}
+
+export interface InvestigationSummary {
+  id: string;
+  name?: string;
+  purpose?: string;
+  status?: string;
+  'created-at'?: string;
+  corpus?: InvestigationCorpusRef | null;
+  phase_count?: number;
+}
+
+export interface InvestigationPhase {
+  id: string;
+  name?: string;
+  content?: string;
+  phase: string;
+  'created-at'?: string;
+  faceting_notes?: Array<{ id: string; name?: string }>;
+}
+
+export interface InvestigationDetail {
+  success: boolean;
+  id: string;
+  name?: string;
+  purpose?: string;
+  status?: string;
+  'created-at'?: string;
+  corpus?: InvestigationCorpusRef | null;
+  phases: InvestigationPhase[];
+}
+
 // --- Read endpoints (scilit CLI) ----------------------------------------------
 
 export async function listCorpora(): Promise<{ collections: Corpus[]; count: number }> {
@@ -168,4 +203,16 @@ export interface RunResult {
 
 export async function runFacetingNote(id: string): Promise<RunResult> {
   return runNotebook(['run-pipeline-note', '--id', id]) as Promise<RunResult>;
+}
+
+// --- Investigation endpoints (scilit CLI) -------------------------------------
+
+export async function listInvestigations(collectionId?: string): Promise<{ investigations: InvestigationSummary[]; count: number }> {
+  const args = ['list-investigations'];
+  if (collectionId) args.push('--collection', collectionId);
+  return runScilit(args) as Promise<{ investigations: InvestigationSummary[]; count: number }>;
+}
+
+export async function getInvestigation(id: string): Promise<InvestigationDetail> {
+  return runScilit(['show-investigation', '--id', id]) as Promise<InvestigationDetail>;
 }

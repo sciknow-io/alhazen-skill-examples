@@ -57,6 +57,12 @@ attribute scilit-dataset-size, value string;
 # Relation attributes
 attribute scilit-usage-type, value string;
 
+# Investigation lifecycle
+# scilit-investigation-status: scoping|discovery|ingest|sensemaking|analysis|report|complete
+attribute scilit-investigation-status, value string;
+# scilit-phase: discovery|ingest|sensemaking|analysis|report
+attribute scilit-phase, value string;
+
 
 # -----------------------------------------------------------------------------
 # ENTITY TYPES - Scientific Literature Collections
@@ -235,6 +241,34 @@ entity scilit-methodology-note sub alh-note,
 # assignments. Linked to its source scilit-corpus collections via alh-aboutness.
 entity scilit-faceting-note sub alh-analysis-pipeline-note,
     owns scilit-note-type;
+
+
+# -----------------------------------------------------------------------------
+# ENTITY TYPES - Scientific Literature Investigations
+# -----------------------------------------------------------------------------
+
+# SCILIT-INVESTIGATION - A named, dated, purpose-driven inquiry over a corpus.
+# Modelled as a note ABOUT a scilit-corpus (via alh-aboutness): inherited `name`
+# is the title, inherited `content` is the purpose/goal (markdown), inherited
+# `created-at` is the start date. scilit-investigation-status tracks lifecycle
+# position. Parent of its phase notes via alh-note-threading. The scilit analogue
+# of tech-recon's trec-investigation, but explicit (phase notes, not just a status
+# string). The alh-aboutness:note and alh-note-threading:{parent,child}-note plays
+# are inherited from alh-note (TypeDB 3.8 forbids redeclaring an unspecialised
+# inherited plays - SVL42).
+entity scilit-investigation sub alh-note,
+    owns scilit-investigation-status;
+
+
+# SCILIT-INVESTIGATION-PHASE - A single phase note threaded under an investigation.
+# scilit-phase distinguishes which phase (discovery|ingest|sensemaking|analysis|
+# report); inherited `content` carries the phase's markdown findings. Child of the
+# investigation; also parent (analysis phase threads referenced scilit-faceting-note
+# pipelines under it) and may be about specific papers - all via plays inherited
+# from alh-note. One phase note per (investigation, phase) is enforced by the
+# record-phase upsert in the CLI.
+entity scilit-investigation-phase sub alh-note,
+    owns scilit-phase;
 
 
 # -----------------------------------------------------------------------------

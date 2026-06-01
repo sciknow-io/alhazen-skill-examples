@@ -1914,6 +1914,303 @@ def cmd_search_sections(args):
 
 
 # =============================================================================
+# INVESTIGATION COMMANDS
+# =============================================================================
+# A scilit-investigation is a note ABOUT a scilit-corpus (via alh-aboutness):
+# inherited `name`=title, `content`=purpose, `created-at`=start date, plus a
+# scilit-investigation-status lifecycle attribute. Each phase is a single
+# scilit-investigation-phase note threaded under it (alh-note-threading), tagged
+# with a scilit-phase attribute. The analysis phase threads existing
+# scilit-faceting-note pipelines under itself. Mirrors tech-recon, but explicit.
+
+INVESTIGATION_PHASES = ["discovery", "ingest", "sensemaking", "analysis", "report"]
+
+
+def _set_investigation_status(tx, inv_id, status):
+    """Replace an investigation's status attribute (delete-has + insert)."""
+    existing = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}", '
+        f'has scilit-investigation-status $s; fetch {{ "s": $s }};'
+    ).resolve())
+    if existing:
+        tx.query(
+            f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}", '
+            f'has scilit-investigation-status $old; delete has $old of $inv;'
+        ).resolve()
+    tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'insert $inv has scilit-investigation-status "{escape_string(status)}";'
+    ).resolve()
+
+
+def _ensure_phase_note(tx, inv_id, phase, content=None):
+    """Find-or-create the phase note for (investigation, phase). Returns (phase_id, created)."""
+    existing = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
+        f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(phase)}"; '
+        f'fetch {{ "id": $ph.id }};'
+    ).resolve())
+    if existing:
+        return existing[0]["id"], False
+    ph_id = generate_id("scphase")
+    ts = get_timestamp()
+    content_clause = f', has content "{escape_string(content)}"' if content else ""
+    tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'insert $ph isa scilit-investigation-phase, has id "{ph_id}", '
+        f'has name "{escape_string(phase.capitalize())} phase"{content_clause}, '
+        f'has scilit-phase "{escape_string(phase)}", has created-at {ts}; '
+        f'(parent-note: $inv, child-note: $ph) isa alh-note-threading;'
+    ).resolve()
+    return ph_id, True
+
+
+def cmd_create_investigation(args):
+    """Create a named investigation note linked to a corpus via alh-aboutness."""
+    inv_id = generate_id("scinv")
+    ts = get_timestamp()
+    status = args.status or "scoping"
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            corpus = list(tx.query(
+                f'match $c isa scilit-corpus, has id "{escape_string(args.collection)}"; '
+                f'fetch {{ "id": $c.id }};'
+            ).resolve())
+            if not corpus:
+                print(json.dumps({"success": False, "error": "Corpus not found"}))
+                sys.exit(1)
+            tx.query(
+                f'match $c isa scilit-corpus, has id "{escape_string(args.collection)}"; '
+                f'insert $inv isa scilit-investigation, has id "{inv_id}", '
+                f'has name "{escape_string(args.name)}", '
+                f'has content "{escape_string(args.purpose)}", '
+                f'has scilit-investigation-status "{escape_string(status)}", '
+                f'has created-at {ts}; '
+                f'(note: $inv, subject: $c) isa alh-aboutness;'
+            ).resolve()
+            tx.commit()
+    print(json.dumps({
+        "success": True,
+        "id": inv_id,
+        "name": args.name,
+        "collection": args.collection,
+        "status": status,
+    }, indent=2))
+
+
+def cmd_list_investigations(args):
+    """List investigations, optionally scoped to one corpus, with status + phase count."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            if args.collection:
+                query = (
+                    f'match $c isa scilit-corpus, has id "{escape_string(args.collection)}"; '
+                    f'(note: $inv, subject: $c) isa alh-aboutness; '
+                    f'$inv isa scilit-investigation; '
+                    f'fetch {{ "id": $inv.id, "name": $inv.name, "purpose": $inv.content, '
+                    f'"status": $inv.scilit-investigation-status, "created-at": $inv.created-at }};'
+                )
+            else:
+                query = (
+                    'match $inv isa scilit-investigation; '
+                    'fetch { "id": $inv.id, "name": $inv.name, "purpose": $inv.content, '
+                    '"status": $inv.scilit-investigation-status, "created-at": $inv.created-at };'
+                )
+            invs = [{k: v for k, v in r.items() if v is not None}
+                    for r in tx.query(query).resolve()]
+
+            for inv in invs:
+                corpus = list(tx.query(
+                    f'match $inv isa scilit-investigation, has id "{escape_string(inv["id"])}"; '
+                    f'(note: $inv, subject: $c) isa alh-aboutness; $c isa scilit-corpus; '
+                    f'fetch {{ "id": $c.id, "name": $c.name }};'
+                ).resolve())
+                inv["corpus"] = ({k: v for k, v in corpus[0].items() if v is not None}
+                                 if corpus else None)
+                phases = list(tx.query(
+                    f'match $inv isa scilit-investigation, has id "{escape_string(inv["id"])}"; '
+                    f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
+                    f'$ph isa scilit-investigation-phase, has scilit-phase $p; '
+                    f'fetch {{ "p": $p }};'
+                ).resolve())
+                inv["phase_count"] = len(phases)
+
+    print(json.dumps({"success": True, "investigations": invs, "count": len(invs)}, indent=2))
+
+
+def cmd_show_investigation(args):
+    """Show an investigation: metadata, corpus, phase notes (canonical order), analysis links."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            result = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'fetch {{ "id": $inv.id, "name": $inv.name, "purpose": $inv.content, '
+                f'"status": $inv.scilit-investigation-status, "created-at": $inv.created-at }};'
+            ).resolve())
+            if not result:
+                print(json.dumps({"success": False, "error": "Investigation not found"}))
+                sys.exit(1)
+            investigation = {k: v for k, v in result[0].items() if v is not None}
+
+            corpus = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'(note: $inv, subject: $c) isa alh-aboutness; $c isa scilit-corpus; '
+                f'fetch {{ "id": $c.id, "name": $c.name }};'
+            ).resolve())
+            investigation["corpus"] = ({k: v for k, v in corpus[0].items() if v is not None}
+                                       if corpus else None)
+
+            phase_rows = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
+                f'$ph isa scilit-investigation-phase, has scilit-phase $phase; '
+                f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, '
+                f'"phase": $phase, "created-at": $ph.created-at }};'
+            ).resolve())
+            phases = [{k: v for k, v in r.items() if v is not None} for r in phase_rows]
+
+            # Attach faceting notes threaded under the analysis phase(s)
+            for ph in phases:
+                if ph.get("phase") == "analysis":
+                    fn = list(tx.query(
+                        f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph["id"])}"; '
+                        f'(parent-note: $ph, child-note: $fn) isa alh-note-threading; '
+                        f'$fn isa scilit-faceting-note; '
+                        f'fetch {{ "id": $fn.id, "name": $fn.name }};'
+                    ).resolve())
+                    ph["faceting_notes"] = [{k: v for k, v in f.items() if v is not None}
+                                            for f in fn]
+
+    order = {p: i for i, p in enumerate(INVESTIGATION_PHASES)}
+    phases.sort(key=lambda p: order.get(p.get("phase"), 99))
+    investigation["phases"] = phases
+    print(json.dumps({"success": True, **investigation}, indent=2))
+
+
+def cmd_record_phase(args):
+    """Upsert a phase note (one per investigation+phase); optionally advance status."""
+    if args.phase not in INVESTIGATION_PHASES:
+        print(json.dumps({"success": False,
+                          "error": f"Invalid phase. Use one of: {', '.join(INVESTIGATION_PHASES)}"}))
+        sys.exit(1)
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            inv = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'fetch {{ "id": $inv.id }};'
+            ).resolve())
+            if not inv:
+                print(json.dumps({"success": False, "error": "Investigation not found"}))
+                sys.exit(1)
+
+            existing = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
+                f'$ph isa scilit-investigation-phase, has scilit-phase "{escape_string(args.phase)}"; '
+                f'fetch {{ "id": $ph.id }};'
+            ).resolve())
+
+            if existing:
+                ph_id = existing[0]["id"]
+                has_content = list(tx.query(
+                    f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}", '
+                    f'has content $c; fetch {{ "c": $c }};'
+                ).resolve())
+                if has_content:
+                    tx.query(
+                        f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}", '
+                        f'has content $old; delete has $old of $ph;'
+                    ).resolve()
+                tx.query(
+                    f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}"; '
+                    f'insert $ph has content "{escape_string(args.content)}";'
+                ).resolve()
+                action = "updated"
+            else:
+                ph_id, _ = _ensure_phase_note(tx, args.investigation, args.phase, args.content)
+                action = "created"
+
+            if args.status:
+                _set_investigation_status(tx, args.investigation, args.status)
+            tx.commit()
+
+    print(json.dumps({
+        "success": True,
+        "investigation": args.investigation,
+        "phase": args.phase,
+        "phase_note_id": ph_id,
+        "action": action,
+        "status": args.status,
+    }, indent=2))
+
+
+def cmd_link_analysis(args):
+    """Thread a scilit-faceting-note under the investigation's analysis phase (idempotent)."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            inv = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'fetch {{ "id": $inv.id }};'
+            ).resolve())
+            if not inv:
+                print(json.dumps({"success": False, "error": "Investigation not found"}))
+                sys.exit(1)
+            fn = list(tx.query(
+                f'match $fn isa scilit-faceting-note, has id "{escape_string(args.faceting_note)}"; '
+                f'fetch {{ "id": $fn.id }};'
+            ).resolve())
+            if not fn:
+                print(json.dumps({"success": False, "error": "Faceting note not found"}))
+                sys.exit(1)
+
+            ph_id, created = _ensure_phase_note(tx, args.investigation, "analysis")
+
+            already = list(tx.query(
+                f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}"; '
+                f'$fn isa scilit-faceting-note, has id "{escape_string(args.faceting_note)}"; '
+                f'(parent-note: $ph, child-note: $fn) isa alh-note-threading; '
+                f'fetch {{ "id": $fn.id }};'
+            ).resolve())
+            if not already:
+                tx.query(
+                    f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph_id)}"; '
+                    f'$fn isa scilit-faceting-note, has id "{escape_string(args.faceting_note)}"; '
+                    f'insert (parent-note: $ph, child-note: $fn) isa alh-note-threading;'
+                ).resolve()
+            tx.commit()
+
+    print(json.dumps({
+        "success": True,
+        "investigation": args.investigation,
+        "analysis_phase_id": ph_id,
+        "faceting_note": args.faceting_note,
+        "linked": not already,
+        "phase_created": created,
+    }, indent=2))
+
+
+def cmd_set_status(args):
+    """Set an investigation's lifecycle status."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            inv = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'fetch {{ "id": $inv.id }};'
+            ).resolve())
+            if not inv:
+                print(json.dumps({"success": False, "error": "Investigation not found"}))
+                sys.exit(1)
+            _set_investigation_status(tx, args.investigation, args.status)
+            tx.commit()
+    print(json.dumps({
+        "success": True,
+        "investigation": args.investigation,
+        "status": args.status,
+    }, indent=2))
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -2040,6 +2337,44 @@ def main():
         help="Number of results to return (default: 10)")
     p_search_sections.set_defaults(func=cmd_search_sections)
 
+    # create-investigation
+    p = subparsers.add_parser("create-investigation",
+        help="Create a named investigation note linked to a corpus")
+    p.add_argument("--collection", required=True, help="scilit-corpus ID the investigation is about")
+    p.add_argument("--name", required=True, help="Investigation title")
+    p.add_argument("--purpose", required=True, help="Purpose/goal (markdown) -> note content")
+    p.add_argument("--status", help="Initial lifecycle status (default: scoping)")
+
+    # list-investigations
+    p = subparsers.add_parser("list-investigations",
+        help="List investigations with status + phase count")
+    p.add_argument("--collection", help="Scope to one corpus ID")
+
+    # show-investigation
+    p = subparsers.add_parser("show-investigation",
+        help="Show an investigation, its phases (canonical order), and analysis links")
+    p.add_argument("--id", required=True, help="Investigation ID (scinv-...)")
+
+    # record-phase
+    p = subparsers.add_parser("record-phase",
+        help="Upsert a phase note (discovery|ingest|sensemaking|analysis|report)")
+    p.add_argument("--investigation", required=True, help="Investigation ID (scinv-...)")
+    p.add_argument("--phase", required=True, choices=INVESTIGATION_PHASES, help="Phase name")
+    p.add_argument("--content", required=True, help="Phase findings (markdown)")
+    p.add_argument("--status", help="Optionally advance the investigation status")
+
+    # link-analysis
+    p = subparsers.add_parser("link-analysis",
+        help="Thread a faceting note under the investigation's analysis phase")
+    p.add_argument("--investigation", required=True, help="Investigation ID (scinv-...)")
+    p.add_argument("--faceting-note", required=True, dest="faceting_note",
+        help="scilit-faceting-note ID (scfn-...)")
+
+    # set-status
+    p = subparsers.add_parser("set-status", help="Set an investigation's lifecycle status")
+    p.add_argument("--investigation", required=True, help="Investigation ID (scinv-...)")
+    p.add_argument("--status", required=True, help="New status value")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2075,6 +2410,12 @@ def main():
         "map": cmd_map,
         "embed-sections": cmd_embed_sections,
         "search-sections": cmd_search_sections,
+        "create-investigation": cmd_create_investigation,
+        "list-investigations": cmd_list_investigations,
+        "show-investigation": cmd_show_investigation,
+        "record-phase": cmd_record_phase,
+        "link-analysis": cmd_link_analysis,
+        "set-status": cmd_set_status,
     }
 
     try:

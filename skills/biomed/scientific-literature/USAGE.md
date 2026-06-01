@@ -469,6 +469,83 @@ pairs to tabulate, and `output_attr_map` routes `crosstab_markdown → content`.
 
 ---
 
+## Investigations
+
+An **investigation** is a named, dated, purpose-driven inquiry over a corpus — the scilit
+analogue of a tech-recon investigation, but with an **explicit phase structure**. It is modelled
+as a note **about** a `scilit-corpus` (`alh-aboutness`): the note's `name` is the title, its
+`content` is the purpose/goal, and `created-at` is the start date, plus a
+`scilit-investigation-status` lifecycle attribute. Each phase is a single
+`scilit-investigation-phase` note threaded under it (`alh-note-threading`) and tagged with a
+`scilit-phase` attribute. The canonical lifecycle is:
+
+```
+discovery → ingest → sensemaking → analysis → report
+```
+
+The **analysis** phase reuses the analysis machinery already built: existing
+`scilit-faceting-note` pipelines are threaded under the analysis phase note (so an investigation
+references — rather than re-implements — faceting runs).
+
+### `create-investigation` -- Start an investigation over a corpus
+
+```bash
+uv run python .claude/skills/scientific-literature/scientific_literature.py create-investigation \
+    --collection collection-cais2026-papers \
+    --name "CAIS agent-safety landscape" \
+    --purpose "## Goal\nMap the agent-safety subfield across the CAIS 2026 corpus." \
+    --status scoping
+# -> { "id": "scinv-...", ... }
+```
+
+### `record-phase` -- Upsert a phase note (and optionally advance status)
+
+One phase note per `(investigation, phase)`. Re-running with the same `--phase` **updates** the
+note's content rather than creating a duplicate.
+
+```bash
+uv run python .claude/skills/scientific-literature/scientific_literature.py record-phase \
+    --investigation scinv-... \
+    --phase discovery \
+    --content "## Discovery\nSearched ACM DL; 105 items (60 papers + 45 demos)." \
+    --status discovery
+```
+
+### `link-analysis` -- Attach a faceting note to the analysis phase
+
+Ensures an `analysis` phase note exists, then threads the `scilit-faceting-note` under it
+(idempotent).
+
+```bash
+uv run python .claude/skills/scientific-literature/scientific_literature.py link-analysis \
+    --investigation scinv-... \
+    --faceting-note scfn-d65ae930475a
+```
+
+### `show-investigation` -- Full investigation with phases in canonical order
+
+```bash
+uv run python .claude/skills/scientific-literature/scientific_literature.py show-investigation \
+    --id scinv-...
+```
+
+Returns the investigation metadata, its linked corpus, the phase notes ordered
+`discovery → … → report`, and (under the analysis phase) the linked faceting notes.
+
+### `list-investigations` / `set-status`
+
+```bash
+# All investigations, or scoped to one corpus
+uv run python .claude/skills/scientific-literature/scientific_literature.py list-investigations \
+    [--collection collection-cais2026-papers]
+
+# Advance the lifecycle status
+uv run python .claude/skills/scientific-literature/scientific_literature.py set-status \
+    --investigation scinv-... --status report
+```
+
+---
+
 ## Source Connector Details
 
 ### Europe PMC

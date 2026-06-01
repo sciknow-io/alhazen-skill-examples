@@ -4,11 +4,12 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { T } from '@/components/scientific-literature/tokens';
 import { Icon, BackNav, TypeChip } from '@/components/scientific-literature/atoms';
-import type { Corpus, FacetingNoteSummary } from '@/lib/scientific-literature';
+import type { Corpus, FacetingNoteSummary, InvestigationSummary } from '@/lib/scientific-literature';
 
 export default function ScientificLiteraturePage() {
   const [corpora, setCorpora] = useState<Corpus[]>([]);
   const [notes, setNotes] = useState<FacetingNoteSummary[]>([]);
+  const [investigations, setInvestigations] = useState<InvestigationSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -16,10 +17,12 @@ export default function ScientificLiteraturePage() {
     Promise.all([
       fetch('/api/scientific-literature/corpora').then((r) => (r.ok ? r.json() : Promise.reject(`corpora ${r.status}`))),
       fetch('/api/scientific-literature/faceting-notes').then((r) => (r.ok ? r.json() : { notes: [] })),
+      fetch('/api/scientific-literature/investigations').then((r) => (r.ok ? r.json() : { investigations: [] })),
     ])
-      .then(([cor, fn]) => {
+      .then(([cor, fn, inv]) => {
         setCorpora(cor.collections || []);
         setNotes(fn.notes || []);
+        setInvestigations(inv.investigations || []);
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
@@ -88,6 +91,41 @@ export default function ScientificLiteraturePage() {
             )}
           </div>
         </section>
+
+        {/* Investigations */}
+        {investigations.length > 0 && (
+          <section style={{ background: T.panel, border: `1px solid ${T.borderDim}`, borderRadius: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, padding: '14px 16px 8px' }}>
+              <h3 style={{ margin: 0, fontFamily: T.mono, fontSize: 10.5, fontWeight: 600, letterSpacing: '1.4px', textTransform: 'uppercase', color: T.fg }}>Investigations</h3>
+              <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgFaint }}>{investigations.length}</span>
+            </div>
+            <div>
+              {investigations.map((inv) => (
+                <Link
+                  key={inv.id}
+                  href={`/scientific-literature/investigation/${inv.id}`}
+                  style={{
+                    display: 'grid', gridTemplateColumns: '110px 1fr auto', gap: 14, alignItems: 'center',
+                    padding: '10px 16px', borderTop: `1px solid ${T.borderDim}`, textDecoration: 'none', color: 'inherit',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(200,122,74,0.06)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <TypeChip short="INQUIRY" color={T.rust} icon="search" />
+                  <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ fontSize: 13.5, color: T.fg, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inv.name || inv.id}</span>
+                    <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgFaint }}>
+                      {(inv.corpus?.name ? `${inv.corpus.name} · ` : '')}{inv.phase_count ?? 0}/5 phases
+                    </span>
+                  </div>
+                  {inv.status && (
+                    <span style={{ fontFamily: T.mono, fontSize: 10, color: T.rust, border: `1px solid ${T.rustDim}`, borderRadius: 3, padding: '2px 7px' }}>{inv.status}</span>
+                  )}
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Faceting notes */}
         {notes.length > 0 && (
