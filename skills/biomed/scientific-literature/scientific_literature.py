@@ -1187,10 +1187,17 @@ def cmd_show(args):
                 f'"cache-path": $a.cache-path, "file-size": $a.file-size }};'
             ).resolve())
 
+            kw_results = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(args.id)}", '
+                f'has scilit-keyword $k; fetch {{ "k": $k }};'
+            ).resolve())
+
     paper = {k: v for k, v in result[0].items() if v is not None}
+    keywords = [r["k"] for r in kw_results]
     print(json.dumps({
         "success": True,
         "paper": paper,
+        "keywords": keywords,
         "notes": [{k: v for k, v in n.items() if v is not None} for n in notes],
         "pdf_artifacts": [{k: v for k, v in a.items() if v is not None} for a in art_results],
     }, indent=2))
@@ -1613,6 +1620,133 @@ def cmd_plot_clusters(args):
     }, indent=2))
 
 
+# Facet namespaces written by the scilit-faceting pipeline (scilit-keyword "<ns>:<value>").
+FACET_NAMESPACES = [
+    "topology", "stage", "concern", "contribution",
+    "domain", "autonomy", "memory", "se-agent",
+]
+
+
+def cmd_map(args):
+    """2D UMAP embedding map (JSON) of one or more corpora for the dashboard.
+
+    Reuses the plot-clusters pipeline (UMAP-50 cosine -> HDBSCAN -> UMAP-2D) but emits
+    per-paper JSON instead of a PNG, joining in fresh TypeDB metadata: the 8 facet tags
+    plus each paper's corpus membership. The client colours points by facet / cluster / corpus.
+    """
+    try:
+        import hdbscan
+        import numpy as np
+        import umap
+        from skillful_alhazen.utils.vector_store import get_collection_vectors, get_qdrant_client
+    except ImportError as e:
+        print(json.dumps({"success": False, "error": f"Missing dependency: {e}"}))
+        sys.exit(1)
+
+    # Resolve target corpus ids: explicit --collection(s), or --all (every scilit-corpus).
+    if args.all:
+        with get_driver() as driver:
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+                rows = list(tx.query(
+                    'match $c isa scilit-corpus; fetch { "id": $c.id };'
+                ).resolve())
+        collection_ids = [r["id"] for r in rows]
+    else:
+        collection_ids = args.collection or []
+
+    if not collection_ids:
+        print(json.dumps({"success": False, "error": "No collections (use --collection or --all)"}))
+        sys.exit(1)
+
+    # Load + dedup vectors across corpora; track per-paper corpus membership.
+    qdrant = get_qdrant_client()
+    paper_map = {}
+    for cid in collection_ids:
+        for p in get_collection_vectors(qdrant, cid):
+            pid = p["paper_id"]
+            entry = paper_map.get(pid)
+            if entry is None:
+                entry = {
+                    "paper_id": pid,
+                    "title": p.get("title", ""),
+                    "year": p.get("year"),
+                    "vector": p["vector"],
+                    "corpus_ids": set(),
+                }
+                paper_map[pid] = entry
+            entry["corpus_ids"].add(cid)
+
+    points = list(paper_map.values())
+    n = len(points)
+    if n == 0:
+        print(json.dumps({"success": False, "error": "No vectors found for the given collections"}))
+        sys.exit(1)
+
+    vectors = np.array([p["vector"] for p in points], dtype=np.float32)
+
+    if n < 3:
+        # Too few points to reduce/cluster; emit a degenerate layout.
+        xy = np.zeros((n, 2), dtype=np.float32)
+        labels = np.array([-1] * n)
+    else:
+        print(f"UMAP 50-dim for clustering ({n} papers)...", file=sys.stderr)
+        reduced_50 = umap.UMAP(
+            n_components=min(50, n - 1), n_neighbors=min(15, n - 1),
+            min_dist=0.0, metric="cosine", random_state=42,
+        ).fit_transform(vectors)
+
+        print(f"HDBSCAN (min_cluster_size={args.min_cluster_size})...", file=sys.stderr)
+        labels = hdbscan.HDBSCAN(
+            min_cluster_size=args.min_cluster_size, metric="euclidean",
+        ).fit_predict(reduced_50)
+
+        print("UMAP 2-dim for layout...", file=sys.stderr)
+        xy = umap.UMAP(
+            n_components=2, n_neighbors=min(15, n - 1),
+            min_dist=0.1, metric="euclidean", random_state=42,
+        ).fit_transform(reduced_50)
+
+    # Join in facet tags from TypeDB (one READ txn; a row per keyword per paper).
+    facets_by_paper = {p["paper_id"]: {} for p in points}
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            for p in points:
+                pid = p["paper_id"]
+                rows = list(tx.query(
+                    f'match $p isa scilit-paper, has id "{escape_string(pid)}", '
+                    f'has scilit-keyword $k; fetch {{ "k": $k }};'
+                ).resolve())
+                for r in rows:
+                    tag = r["k"]
+                    if ":" not in tag:
+                        continue
+                    ns, value = tag.split(":", 1)
+                    if ns in FACET_NAMESPACES:
+                        facets_by_paper[pid][ns] = value
+
+    items = []
+    for i, p in enumerate(points):
+        items.append({
+            "paper_id": p["paper_id"],
+            "x": float(xy[i][0]),
+            "y": float(xy[i][1]),
+            "cluster": int(labels[i]),
+            "title": p["title"],
+            "year": p["year"],
+            "corpus_ids": sorted(p["corpus_ids"]),
+            "facets": facets_by_paper[p["paper_id"]],
+        })
+
+    num_clusters = len({int(l) for l in labels if int(l) != -1})
+    print(json.dumps({
+        "success": True,
+        "count": n,
+        "num_clusters": num_clusters,
+        "collection_ids": collection_ids,
+        "items": items,
+    }, indent=2))
+
+
 # =============================================================================
 # APT SECTION EMBEDDING COMMANDS
 # =============================================================================
@@ -1870,6 +2004,14 @@ def main():
     p.add_argument("--output", default="clusters.png", help="Output PNG path")
     p.add_argument("--labels", nargs="*", help="Theme labels: 0:theme-a 1:theme-b ...")
 
+    # map
+    p = subparsers.add_parser("map", help="2D UMAP embedding map (JSON) for the dashboard")
+    p.add_argument("--collection", action="append",
+                   help="Corpus ID to include (repeatable)")
+    p.add_argument("--all", action="store_true", help="Include every scilit-corpus")
+    p.add_argument("--min-cluster-size", type=int, default=10,
+                   help="HDBSCAN min_cluster_size (default: 10)")
+
     # embed-sections
     p_embed_sections = subparsers.add_parser(
         "embed-sections",
@@ -1904,7 +2046,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    SEMANTIC_COMMANDS = {"embed", "search-semantic", "cluster", "plot-clusters",
+    SEMANTIC_COMMANDS = {"embed", "search-semantic", "cluster", "plot-clusters", "map",
                          "embed-sections", "search-sections"}
     NON_DB_COMMANDS = {"count"} | SEMANTIC_COMMANDS
 
@@ -1930,6 +2072,7 @@ def main():
         "search-semantic": cmd_search_semantic,
         "cluster": cmd_cluster,
         "plot-clusters": cmd_plot_clusters,
+        "map": cmd_map,
         "embed-sections": cmd_embed_sections,
         "search-sections": cmd_search_sections,
     }
