@@ -202,13 +202,13 @@ def paper_exists(driver, doi=None, pmid=None):
     with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
         if doi:
             result = list(tx.query(
-                f'match $p isa scilit-paper, has doi "{escape_string(doi)}"; fetch {{ "id": $p.id }};'
+                f'match $p isa scilit-paper, has scilit-doi "{escape_string(doi)}"; fetch {{ "id": $p.id }};'
             ).resolve())
             if result:
                 return result[0]["id"]
         if pmid:
             result = list(tx.query(
-                f'match $p isa scilit-paper, has pmid "{escape_string(pmid)}"; fetch {{ "id": $p.id }};'
+                f'match $p isa scilit-paper, has scilit-pmid "{escape_string(pmid)}"; fetch {{ "id": $p.id }};'
             ).resolve())
             if result:
                 return result[0]["id"]
@@ -224,27 +224,27 @@ def insert_paper(driver, paper: dict) -> str:
     if paper.get("abstract"):
         q += f', has abstract-text "{escape_string(paper["abstract"])}"'
     if paper.get("doi"):
-        q += f', has doi "{escape_string(paper["doi"])}"'
+        q += f', has scilit-doi "{escape_string(paper["doi"])}"'
     if paper.get("pmid"):
-        q += f', has pmid "{escape_string(str(paper["pmid"]))}"'
+        q += f', has scilit-pmid "{escape_string(str(paper["pmid"]))}"'
     if paper.get("pmcid"):
-        q += f', has pmcid "{escape_string(paper["pmcid"])}"'
+        q += f', has scilit-pmcid "{escape_string(paper["pmcid"])}"'
     if paper.get("arxiv_id"):
-        q += f', has arxiv-id "{escape_string(paper["arxiv_id"])}"'
+        q += f', has scilit-arxiv-id "{escape_string(paper["arxiv_id"])}"'
     if paper.get("year"):
-        q += f', has publication-year {int(paper["year"])}'
+        q += f', has scilit-publication-year {int(paper["year"])}'
     if paper.get("journal"):
-        q += f', has journal-name "{escape_string(paper["journal"])}"'
+        q += f', has scilit-journal-name "{escape_string(paper["journal"])}"'
     if paper.get("journal_volume"):
-        q += f', has journal-volume "{escape_string(paper["journal_volume"])}"'
+        q += f', has scilit-journal-volume "{escape_string(paper["journal_volume"])}"'
     if paper.get("journal_issue"):
-        q += f', has journal-issue "{escape_string(paper["journal_issue"])}"'
+        q += f', has scilit-journal-issue "{escape_string(paper["journal_issue"])}"'
     if paper.get("page_range"):
-        q += f', has page-range "{escape_string(paper["page_range"])}"'
+        q += f', has scilit-page-range "{escape_string(paper["page_range"])}"'
     if paper.get("source_uri"):
         q += f', has source-uri "{escape_string(paper["source_uri"])}"'
     for kw in paper.get("keywords", []):
-        q += f', has keyword "{escape_string(kw)}"'
+        q += f', has scilit-keyword "{escape_string(kw)}"'
     q += f', has created-at {timestamp};'
 
     with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
@@ -259,9 +259,9 @@ def add_to_collection(driver, paper_id: str, collection_id: str):
     timestamp = get_timestamp()
     with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
         tx.query(
-            f'match $c isa collection, has id "{collection_id}"; '
+            f'match $c isa alh-collection, has id "{collection_id}"; '
             f'$p isa scilit-paper, has id "{paper_id}"; '
-            f'insert (collection: $c, member: $p) isa collection-membership, '
+            f'insert (collection: $c, member: $p) isa alh-collection-membership, '
             f'has created-at {timestamp};'
         ).resolve()
         tx.commit()
@@ -401,31 +401,31 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
     timestamp = get_timestamp()
 
     # Build insert query
-    query = f'insert $p isa {paper["typedb_type"]}, has id "{paper_id}", has name "{escape_string(paper["title"])}", has doi "{paper["doi"]}", has created-at {timestamp}'
+    query = f'insert $p isa {paper["typedb_type"]}, has id "{paper_id}", has name "{escape_string(paper["title"])}", has scilit-doi "{paper["doi"]}", has created-at {timestamp}'
 
     if paper.get("pmid"):
-        query += f', has pmid "{paper["pmid"]}"'
+        query += f', has scilit-pmid "{paper["pmid"]}"'
     if paper.get("pmcid"):
-        query += f', has pmcid "{paper["pmcid"]}"'
+        query += f', has scilit-pmcid "{paper["pmcid"]}"'
     if paper.get("abstract"):
         query += f', has abstract-text "{escape_string(paper["abstract"])}"'
     if paper.get("year") and paper.get("typedb_type") != "scilit-preprint":
-        query += f', has publication-year {paper["year"]}'
+        query += f', has scilit-publication-year {paper["year"]}'
     if paper.get("journal"):
-        query += f', has journal-name "{escape_string(paper["journal"])}"'
+        query += f', has scilit-journal-name "{escape_string(paper["journal"])}"'
     if paper.get("journal_volume"):
-        query += f', has journal-volume "{escape_string(paper["journal_volume"])}"'
+        query += f', has scilit-journal-volume "{escape_string(paper["journal_volume"])}"'
     if paper.get("journal_issue"):
-        query += f', has journal-issue "{escape_string(paper["journal_issue"])}"'
+        query += f', has scilit-journal-issue "{escape_string(paper["journal_issue"])}"'
     if paper.get("page_range"):
-        query += f', has page-range "{escape_string(paper["page_range"])}"'
+        query += f', has scilit-page-range "{escape_string(paper["page_range"])}"'
     for kw in paper.get("keywords", []):
-        query += f', has keyword "{escape_string(kw)}"'
+        query += f', has scilit-keyword "{escape_string(kw)}"'
     query += ";"
 
     # Check if paper already exists
     with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-        check = f'match $p isa scilit-paper, has doi "{paper["doi"]}"; fetch {{ "id": $p.id }};'
+        check = f'match $p isa scilit-paper, has scilit-doi "{paper["doi"]}"; fetch {{ "id": $p.id }};'
         if list(tx.query(check).resolve()):
             return paper_id
 
@@ -441,17 +441,17 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
 
     # Link artifact to paper
     with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-        tx.query(f'match $p isa scilit-paper, has id "{paper_id}"; $a isa artifact, has id "{artifact_id}"; insert (artifact: $a, referent: $p) isa representation;').resolve()
+        tx.query(f'match $p isa scilit-paper, has id "{paper_id}"; $a isa alh-artifact, has id "{artifact_id}"; insert (alh-artifact: $a, referent: $p) isa alh-representation;').resolve()
         tx.commit()
 
     # Create title fragment
     if paper.get("title"):
         title_frag_id = generate_id("fragment")
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $f isa scilit-section, has id "{title_frag_id}", has content "{escape_string(paper["title"])}", has section-type "title", has offset 0, has length {len(paper["title"])}, has created-at {timestamp};').resolve()
+            tx.query(f'insert $f isa scilit-section, has id "{title_frag_id}", has content "{escape_string(paper["title"])}", has scilit-section-type "title", has offset 0, has length {len(paper["title"])}, has created-at {timestamp};').resolve()
             tx.commit()
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'match $a isa artifact, has id "{artifact_id}"; $f isa fragment, has id "{title_frag_id}"; insert (whole: $a, part: $f) isa fragmentation;').resolve()
+            tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; $f isa alh-fragment, has id "{title_frag_id}"; insert (whole: $a, part: $f) isa alh-fragmentation;').resolve()
             tx.commit()
 
     # Create abstract fragment
@@ -459,16 +459,16 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
         abs_frag_id = generate_id("fragment")
         title_len = len(paper.get("title", "")) + 1
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'insert $f isa scilit-section, has id "{abs_frag_id}", has content "{escape_string(paper["abstract"])}", has section-type "abstract", has offset {title_len}, has length {len(paper["abstract"])}, has created-at {timestamp};').resolve()
+            tx.query(f'insert $f isa scilit-section, has id "{abs_frag_id}", has content "{escape_string(paper["abstract"])}", has scilit-section-type "abstract", has offset {title_len}, has length {len(paper["abstract"])}, has created-at {timestamp};').resolve()
             tx.commit()
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'match $a isa artifact, has id "{artifact_id}"; $f isa fragment, has id "{abs_frag_id}"; insert (whole: $a, part: $f) isa fragmentation;').resolve()
+            tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; $f isa alh-fragment, has id "{abs_frag_id}"; insert (whole: $a, part: $f) isa alh-fragmentation;').resolve()
             tx.commit()
 
     # Add to collection if specified
     if collection_id:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'match $c isa collection, has id "{collection_id}"; $p isa scilit-paper, has id "{paper_id}"; insert (collection: $c, member: $p) isa collection-membership, has created-at {timestamp};').resolve()
+            tx.query(f'match $c isa alh-collection, has id "{collection_id}"; $p isa scilit-paper, has id "{paper_id}"; insert (collection: $c, member: $p) isa alh-collection-membership, has created-at {timestamp};').resolve()
             tx.commit()
 
     # Tag with publication type
@@ -476,13 +476,13 @@ def insert_epmc_paper(driver, paper: dict, collection_id=None) -> str:
         tag_name = paper["pub_type_label"]
         tag_id = generate_id("tag")
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            existing_tag = list(tx.query(f'match $t isa tag, has name "{tag_name}"; fetch {{ "id": $t.id }};').resolve())
+            existing_tag = list(tx.query(f'match $t isa alh-tag, has name "{tag_name}"; fetch {{ "id": $t.id }};').resolve())
         if not existing_tag:
             with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-                tx.query(f'insert $t isa tag, has id "{tag_id}", has name "{tag_name}";').resolve()
+                tx.query(f'insert $t isa alh-tag, has id "{tag_id}", has name "{tag_name}";').resolve()
                 tx.commit()
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
-            tx.query(f'match $p isa scilit-paper, has id "{paper_id}"; $t isa tag, has name "{tag_name}"; insert (tagged-entity: $p, tag: $t) isa tagging, has created-at {timestamp};').resolve()
+            tx.query(f'match $p isa scilit-paper, has id "{paper_id}"; $t isa alh-tag, has name "{tag_name}"; insert (tagged-entity: $p, tag: $t) isa alh-tagging, has created-at {timestamp};').resolve()
             tx.commit()
 
     return paper_id
@@ -824,11 +824,11 @@ def cmd_search(args):
         with get_driver() as driver:
             with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
                 tx.query(
-                    f'insert $c isa collection, has id "{collection_id}", '
+                    f'insert $c isa scilit-corpus, has id "{collection_id}", '
                     f'has name "{escape_string(collection_name)}", '
                     f'has description "EPMC search results for: {escape_string(query)}", '
-                    f'has logical-query "{escape_string(query)}", '
-                    f'has is-extensional true, has created-at {timestamp};'
+                    f'has alh-logical-query "{escape_string(query)}", '
+                    f'has alh-is-extensional true, has created-at {timestamp};'
                 ).resolve()
                 tx.commit()
 
@@ -1029,7 +1029,7 @@ def cmd_fetch_pdf(args):
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             results = list(tx.query(
                 f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
-                f'fetch {{ "name": $p.name, "doi": $p.doi, "arxiv-id": $p.arxiv-id }};'
+                f'fetch {{ "name": $p.name, "doi": $p.scilit-doi, "arxiv-id": $p.scilit-arxiv-id }};'
             ).resolve())
         if not results:
             print(json.dumps({"success": False, "error": f"Paper not found: {paper_id}"}))
@@ -1045,7 +1045,7 @@ def cmd_fetch_pdf(args):
             existing = list(tx.query(
                 f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
                 f'$a isa scilit-pdf-fulltext; '
-                f'(artifact: $a, referent: $p) isa representation; '
+                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
                 f'fetch {{ "id": $a.id, "cache-path": $a.cache-path, "source-uri": $a.source-uri }};'
             ).resolve())
         if existing and not getattr(args, "force", False):
@@ -1137,7 +1137,7 @@ def cmd_fetch_pdf(args):
             tx.query(
                 f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
                 f'$a isa scilit-pdf-fulltext, has id "{artifact_id}"; '
-                f'insert (artifact: $a, referent: $p) isa representation;'
+                f'insert (alh-artifact: $a, referent: $p) isa alh-representation;'
             ).resolve()
             tx.commit()
 
@@ -1165,8 +1165,8 @@ def cmd_show(args):
             result = list(tx.query(
                 f'match $p isa scilit-paper, has id "{args.id}"; '
                 f'fetch {{ "id": $p.id, "name": $p.name, "abstract-text": $p.abstract-text, '
-                f'"doi": $p.doi, "pmid": $p.pmid, "year": $p.publication-year, '
-                f'"journal": $p.journal-name, "source-uri": $p.source-uri }};'
+                f'"doi": $p.scilit-doi, "pmid": $p.scilit-pmid, "year": $p.scilit-publication-year, '
+                f'"journal": $p.scilit-journal-name, "source-uri": $p.source-uri }};'
             ).resolve())
 
             if not result:
@@ -1175,14 +1175,14 @@ def cmd_show(args):
 
             notes = list(tx.query(
                 f'match $p isa scilit-paper, has id "{args.id}"; '
-                f'(note: $n, subject: $p) isa aboutness; '
+                f'(note: $n, subject: $p) isa alh-aboutness; '
                 f'fetch {{ "id": $n.id, "name": $n.name, "content": $n.content }};'
             ).resolve())
 
             art_results = list(tx.query(
                 f'match $p isa scilit-paper, has id "{escape_string(args.id)}"; '
                 f'$a isa scilit-pdf-fulltext; '
-                f'(artifact: $a, referent: $p) isa representation; '
+                f'(alh-artifact: $a, referent: $p) isa alh-representation; '
                 f'fetch {{ "id": $a.id, "source-uri": $a.source-uri, '
                 f'"cache-path": $a.cache-path, "file-size": $a.file-size }};'
             ).resolve())
@@ -1202,15 +1202,15 @@ def cmd_list(args):
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             if args.collection:
                 query = (
-                    f'match $c isa collection, has id "{args.collection}"; '
-                    f'(collection: $c, member: $p) isa collection-membership; '
+                    f'match $c isa alh-collection, has id "{args.collection}"; '
+                    f'(collection: $c, member: $p) isa alh-collection-membership; '
                     f'$p isa scilit-paper; '
-                    f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.doi, "year": $p.publication-year }};'
+                    f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "year": $p.scilit-publication-year }};'
                 )
             else:
                 query = (
                     'match $p isa scilit-paper; '
-                    'fetch { "id": $p.id, "name": $p.name, "doi": $p.doi, "year": $p.publication-year };'
+                    'fetch { "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, "year": $p.scilit-publication-year };'
                 )
             results = list(tx.query(query).resolve())
 
@@ -1228,9 +1228,9 @@ def cmd_list_collections(args):
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             results = list(tx.query(
-                'match $c isa collection, has logical-query $q; '
+                'match $c isa scilit-corpus, has alh-logical-query $q; '
                 'fetch { "id": $c.id, "name": $c.name, "description": $c.description, '
-                '"logical-query": $c.logical-query };'
+                '"logical-query": $c.alh-logical-query };'
             ).resolve())
 
     print(json.dumps({"success": True, "collections": results, "count": len(results)}, indent=2))
@@ -1243,19 +1243,19 @@ def cmd_list_by_keyword(args):
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             if args.collection:
                 query = (
-                    f'match $c isa collection, has id "{escape_string(args.collection)}"; '
-                    f'(collection: $c, member: $p) isa collection-membership; '
-                    f'$p isa scilit-paper, has keyword "{escape_string(keyword)}", '
-                    f'has publication-year $yr; '
+                    f'match $c isa alh-collection, has id "{escape_string(args.collection)}"; '
+                    f'(collection: $c, member: $p) isa alh-collection-membership; '
+                    f'$p isa scilit-paper, has scilit-keyword "{escape_string(keyword)}", '
+                    f'has scilit-publication-year $yr; '
                     f'fetch {{ "id": $p.id, "name": $p.name, "abstract": $p.abstract-text, '
-                    f'"year": $yr, "doi": $p.doi, "journal": $p.journal-name }};'
+                    f'"year": $yr, "doi": $p.scilit-doi, "journal": $p.scilit-journal-name }};'
                 )
             else:
                 query = (
-                    f'match $p isa scilit-paper, has keyword "{escape_string(keyword)}", '
-                    f'has publication-year $yr; '
+                    f'match $p isa scilit-paper, has scilit-keyword "{escape_string(keyword)}", '
+                    f'has scilit-publication-year $yr; '
                     f'fetch {{ "id": $p.id, "name": $p.name, "abstract": $p.abstract-text, '
-                    f'"year": $yr, "doi": $p.doi, "journal": $p.journal-name }};'
+                    f'"year": $yr, "doi": $p.scilit-doi, "journal": $p.scilit-journal-name }};'
                 )
             results = list(tx.query(query).resolve())
 
@@ -1295,12 +1295,12 @@ def _get_collection_papers(driver, collection_id: str) -> list:
     """Fetch all scilit-papers in a collection from TypeDB."""
     with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
         results = list(tx.query(
-            f'match $c isa collection, has id "{collection_id}"; '
-            f'(collection: $c, member: $p) isa collection-membership; '
+            f'match $c isa alh-collection, has id "{collection_id}"; '
+            f'(collection: $c, member: $p) isa alh-collection-membership; '
             f'$p isa scilit-paper; '
             f'fetch {{ "id": $p.id, "name": $p.name, '
             f'"abstract-text": $p.abstract-text, '
-            f'"doi": $p.doi, "year": $p.publication-year }};'
+            f'"doi": $p.scilit-doi, "year": $p.scilit-publication-year }};'
         ).resolve())
     return [{k: v for k, v in r.items() if v is not None} for r in results]
 
@@ -1500,7 +1500,7 @@ def cmd_cluster(args):
                             try:
                                 tx.query(
                                     f'match $p isa scilit-paper, has id "{pid}"; '
-                                    f'insert $p has keyword "{theme_escaped}";'
+                                    f'insert $p has scilit-keyword "{theme_escaped}";'
                                 ).resolve()
                             except Exception:
                                 pass
@@ -1640,9 +1640,9 @@ def cmd_embed_sections(args):
     query = (
         f'match '
         f'$paper isa scilit-paper, has id "{paper_id}"; '
-        f'(artifact: $artifact, subject: $paper) isa representation; '
+        f'(alh-artifact: $artifact, referent: $paper) isa alh-representation; '
         f'$section isa scilit-section; '
-        f'(whole: $artifact, part: $section) isa fragmentation; '
+        f'(whole: $artifact, part: $section) isa alh-fragmentation; '
         f'$section has id $sid; '
         f'$section has content $content; '
         f'fetch {{ "section_id": $sid, "content": $content }};'
