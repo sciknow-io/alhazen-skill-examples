@@ -124,13 +124,22 @@ export interface InvestigationCorpusRef {
   name?: string;
 }
 
+export interface InvestigationPaperRef {
+  id: string;
+  name?: string;
+  doi?: string;
+  year?: number;
+}
+
 export interface InvestigationSummary {
   id: string;
   name?: string;
   purpose?: string;
   status?: string;
+  type?: string;
   'created-at'?: string;
   corpus?: InvestigationCorpusRef | null;
+  focal_paper?: InvestigationPaperRef | null;
   phase_count?: number;
 }
 
@@ -143,15 +152,42 @@ export interface InvestigationPhase {
   faceting_notes?: Array<{ id: string; name?: string }>;
 }
 
+export interface EvidenceNode {
+  id: string;
+  evidence_type?: string;
+  experimental_design?: string;
+  data_summary?: string;
+  source_url?: string;
+  source_paper?: InvestigationPaperRef | null;
+}
+
+export interface ClaimNode {
+  id: string;
+  type?: string;
+  statement?: string;
+  evidence?: EvidenceNode[];
+}
+
+export interface ImpactNode {
+  id: string;
+  impact_type?: string;
+  impact_summary?: string;
+  citing_paper?: InvestigationPaperRef | null;
+}
+
 export interface InvestigationDetail {
   success: boolean;
   id: string;
   name?: string;
   purpose?: string;
   status?: string;
+  type?: string;
   'created-at'?: string;
   corpus?: InvestigationCorpusRef | null;
+  focal_paper?: InvestigationPaperRef | null;
   phases: InvestigationPhase[];
+  claims?: ClaimNode[];
+  citation_impacts?: ImpactNode[];
 }
 
 // --- Read endpoints (scilit CLI) ----------------------------------------------

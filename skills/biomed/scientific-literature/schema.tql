@@ -63,6 +63,23 @@ attribute scilit-investigation-status, value string;
 # scilit-phase: discovery|ingest|sensemaking|analysis|report
 attribute scilit-phase, value string;
 
+# Investigation typing (deep-dive | conference-overview | corpus)
+attribute scilit-investigation-type, value string;
+
+# Deep-dive: claim / evidence / citation-impact
+# scilit-claim-type: primary|secondary|peripheral
+attribute scilit-claim-type, value string;
+attribute scilit-claim-statement, value string;
+# scilit-evidence-type: experimental|observational|computational|review|theoretical|anecdotal
+attribute scilit-evidence-type, value string;
+attribute scilit-experimental-design, value string;
+attribute scilit-data-summary, value string;
+# scilit-impact-type: supports|refutes|extends|nuances|uses|unrelated
+attribute scilit-impact-type, value string;
+attribute scilit-impact-summary, value string;
+# Fallback locator when a source/citing paper has no DOI
+attribute scilit-source-url, value string;
+
 
 # -----------------------------------------------------------------------------
 # ENTITY TYPES - Scientific Literature Collections
@@ -244,11 +261,50 @@ entity scilit-faceting-note sub alh-analysis-pipeline-note,
 
 
 # -----------------------------------------------------------------------------
+# ENTITY TYPES - Deep-Dive (single-paper) claim/evidence/citation graph
+# -----------------------------------------------------------------------------
+# A deep-dive investigation resolves every claim in a focal scilit-paper down to
+# primary evidence and surveys how citing papers received it. The investigation
+# note is the root (its aboutness:subject is the focal scilit-paper). Claims are
+# threaded under the investigation; evidence under each claim; citation-impacts
+# under the investigation. Source/citing papers are real scilit-paper entities,
+# linked via alh-aboutness (note->subject). All threading/aboutness plays are
+# inherited from alh-note - SVL42 forbids redeclaring them, so these declare
+# `owns` only.
+
+# SCILIT-CLAIM - A single claim extracted from the focal paper.
+entity scilit-claim sub alh-note,
+    owns scilit-claim-type,
+    owns scilit-claim-statement;
+
+
+# SCILIT-EVIDENCE - Evidence supporting a claim, threaded under the claim.
+# When the evidence comes from a cited paper, that paper is linked via
+# alh-aboutness (note:$evidence, subject:$source-paper); scilit-source-url is a
+# fallback locator for sources with no DOI.
+entity scilit-evidence sub alh-note,
+    owns scilit-evidence-type,
+    owns scilit-experimental-design,
+    owns scilit-data-summary,
+    owns scilit-source-url;
+
+
+# SCILIT-CITATION-IMPACT - How a citing paper received the focal paper's claims,
+# threaded under the investigation. The citing paper is linked via alh-aboutness
+# (note:$impact, subject:$citing-paper).
+entity scilit-citation-impact sub alh-note,
+    owns scilit-impact-type,
+    owns scilit-impact-summary;
+
+
+# -----------------------------------------------------------------------------
 # ENTITY TYPES - Scientific Literature Investigations
 # -----------------------------------------------------------------------------
 
-# SCILIT-INVESTIGATION - A named, dated, purpose-driven inquiry over a corpus.
-# Modelled as a note ABOUT a scilit-corpus (via alh-aboutness): inherited `name`
+# SCILIT-INVESTIGATION - A named, dated, purpose-driven inquiry. Typed by
+# scilit-investigation-type: `corpus` (the default - aboutness subject is a
+# scilit-corpus) or `deep-dive` (aboutness subject is a single focal scilit-paper;
+# threads scilit-claim / scilit-citation-impact notes under it). Inherited `name`
 # is the title, inherited `content` is the purpose/goal (markdown), inherited
 # `created-at` is the start date. scilit-investigation-status tracks lifecycle
 # position. Parent of its phase notes via alh-note-threading. The scilit analogue
@@ -257,7 +313,8 @@ entity scilit-faceting-note sub alh-analysis-pipeline-note,
 # are inherited from alh-note (TypeDB 3.8 forbids redeclaring an unspecialised
 # inherited plays - SVL42).
 entity scilit-investigation sub alh-note,
-    owns scilit-investigation-status;
+    owns scilit-investigation-status,
+    owns scilit-investigation-type;
 
 
 # SCILIT-INVESTIGATION-PHASE - A single phase note threaded under an investigation.

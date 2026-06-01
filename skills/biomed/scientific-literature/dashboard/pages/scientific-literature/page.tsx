@@ -111,11 +111,17 @@ export default function ScientificLiteraturePage() {
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(200,122,74,0.06)'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                 >
-                  <TypeChip short="INQUIRY" color={T.rust} icon="search" />
+                  <TypeChip
+                    short={inv.type === 'deep-dive' ? 'DEEP DIVE' : 'INQUIRY'}
+                    color={T.rust}
+                    icon="search"
+                  />
                   <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <span style={{ fontSize: 13.5, color: T.fg, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inv.name || inv.id}</span>
-                    <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgFaint }}>
-                      {(inv.corpus?.name ? `${inv.corpus.name} · ` : '')}{inv.phase_count ?? 0}/5 phases
+                    <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.fgFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {inv.type === 'deep-dive'
+                        ? `${inv.focal_paper?.name ? `${inv.focal_paper.name} · ` : ''}${inv.phase_count ?? 0}/5 phases`
+                        : `${inv.corpus?.name ? `${inv.corpus.name} · ` : ''}${inv.phase_count ?? 0}/5 phases`}
                     </span>
                   </div>
                   {inv.status && (

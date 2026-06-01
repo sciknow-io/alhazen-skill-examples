@@ -1967,10 +1967,55 @@ def _ensure_phase_note(tx, inv_id, phase, content=None):
 
 
 def cmd_create_investigation(args):
-    """Create a named investigation note linked to a corpus via alh-aboutness."""
+    """Create a named investigation note. Typed `corpus` (about a scilit-corpus) or
+    `deep-dive` (about a single focal scilit-paper)."""
+    inv_type = getattr(args, "type", None) or "corpus"
+    if inv_type not in ("corpus", "deep-dive"):
+        print(json.dumps({"success": False,
+                          "error": "Invalid --type. Use 'corpus' or 'deep-dive'"}))
+        sys.exit(1)
     inv_id = generate_id("scinv")
     ts = get_timestamp()
     status = args.status or "scoping"
+
+    if inv_type == "deep-dive":
+        if not getattr(args, "paper", None):
+            print(json.dumps({"success": False,
+                              "error": "--paper (DOI or scilit-paper id) is required for a deep-dive"}))
+            sys.exit(1)
+        with get_driver() as driver:
+            focal_id = _resolve_paper_arg(driver, args.paper)
+            if not focal_id:
+                print(json.dumps({"success": False,
+                                  "error": f"Could not resolve focal paper: {args.paper}"}))
+                sys.exit(1)
+            with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+                tx.query(
+                    f'match $p isa scilit-paper, has id "{escape_string(focal_id)}"; '
+                    f'insert $inv isa scilit-investigation, has id "{inv_id}", '
+                    f'has name "{escape_string(args.name)}", '
+                    f'has content "{escape_string(args.purpose)}", '
+                    f'has scilit-investigation-status "{escape_string(status)}", '
+                    f'has scilit-investigation-type "deep-dive", '
+                    f'has created-at {ts}; '
+                    f'(note: $inv, subject: $p) isa alh-aboutness;'
+                ).resolve()
+                tx.commit()
+        print(json.dumps({
+            "success": True,
+            "id": inv_id,
+            "name": args.name,
+            "type": "deep-dive",
+            "focal_paper": focal_id,
+            "status": status,
+        }, indent=2))
+        return
+
+    # corpus (default)
+    if not getattr(args, "collection", None):
+        print(json.dumps({"success": False,
+                          "error": "--collection (scilit-corpus id) is required for a corpus investigation"}))
+        sys.exit(1)
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             corpus = list(tx.query(
@@ -1986,6 +2031,7 @@ def cmd_create_investigation(args):
                 f'has name "{escape_string(args.name)}", '
                 f'has content "{escape_string(args.purpose)}", '
                 f'has scilit-investigation-status "{escape_string(status)}", '
+                f'has scilit-investigation-type "corpus", '
                 f'has created-at {ts}; '
                 f'(note: $inv, subject: $c) isa alh-aboutness;'
             ).resolve()
@@ -1994,6 +2040,7 @@ def cmd_create_investigation(args):
         "success": True,
         "id": inv_id,
         "name": args.name,
+        "type": "corpus",
         "collection": args.collection,
         "status": status,
     }, indent=2))
@@ -2009,13 +2056,15 @@ def cmd_list_investigations(args):
                     f'(note: $inv, subject: $c) isa alh-aboutness; '
                     f'$inv isa scilit-investigation; '
                     f'fetch {{ "id": $inv.id, "name": $inv.name, "purpose": $inv.content, '
-                    f'"status": $inv.scilit-investigation-status, "created-at": $inv.created-at }};'
+                    f'"status": $inv.scilit-investigation-status, '
+                    f'"type": $inv.scilit-investigation-type, "created-at": $inv.created-at }};'
                 )
             else:
                 query = (
                     'match $inv isa scilit-investigation; '
                     'fetch { "id": $inv.id, "name": $inv.name, "purpose": $inv.content, '
-                    '"status": $inv.scilit-investigation-status, "created-at": $inv.created-at };'
+                    '"status": $inv.scilit-investigation-status, '
+                    '"type": $inv.scilit-investigation-type, "created-at": $inv.created-at };'
                 )
             invs = [{k: v for k, v in r.items() if v is not None}
                     for r in tx.query(query).resolve()]
@@ -2028,6 +2077,14 @@ def cmd_list_investigations(args):
                 ).resolve())
                 inv["corpus"] = ({k: v for k, v in corpus[0].items() if v is not None}
                                  if corpus else None)
+                if inv.get("type") == "deep-dive":
+                    focal = list(tx.query(
+                        f'match $inv isa scilit-investigation, has id "{escape_string(inv["id"])}"; '
+                        f'(note: $inv, subject: $p) isa alh-aboutness; $p isa scilit-paper; '
+                        f'fetch {{ "id": $p.id, "name": $p.name }};'
+                    ).resolve())
+                    inv["focal_paper"] = ({k: v for k, v in focal[0].items() if v is not None}
+                                          if focal else None)
                 phases = list(tx.query(
                     f'match $inv isa scilit-investigation, has id "{escape_string(inv["id"])}"; '
                     f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
@@ -2039,53 +2096,212 @@ def cmd_list_investigations(args):
     print(json.dumps({"success": True, "investigations": invs, "count": len(invs)}, indent=2))
 
 
-def cmd_show_investigation(args):
-    """Show an investigation: metadata, corpus, phase notes (canonical order), analysis links."""
-    with get_driver() as driver:
-        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
-            result = list(tx.query(
-                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
-                f'fetch {{ "id": $inv.id, "name": $inv.name, "purpose": $inv.content, '
-                f'"status": $inv.scilit-investigation-status, "created-at": $inv.created-at }};'
+def _load_investigation(tx, inv_id):
+    """Load a full investigation dict (metadata, subject, phases, and — for a
+    deep-dive — claims/evidence/citation-impacts). Returns None if not found."""
+    result = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'fetch {{ "id": $inv.id, "name": $inv.name, "purpose": $inv.content, '
+        f'"status": $inv.scilit-investigation-status, '
+        f'"type": $inv.scilit-investigation-type, "created-at": $inv.created-at }};'
+    ).resolve())
+    if not result:
+        return None
+    investigation = {k: v for k, v in result[0].items() if v is not None}
+    inv_type = investigation.get("type", "corpus")
+
+    # Aboutness subject: scilit-corpus (corpus) or scilit-paper (deep-dive).
+    corpus = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'(note: $inv, subject: $c) isa alh-aboutness; $c isa scilit-corpus; '
+        f'fetch {{ "id": $c.id, "name": $c.name }};'
+    ).resolve())
+    investigation["corpus"] = ({k: v for k, v in corpus[0].items() if v is not None}
+                               if corpus else None)
+    focal = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'(note: $inv, subject: $p) isa alh-aboutness; $p isa scilit-paper; '
+        f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, '
+        f'"year": $p.scilit-publication-year }};'
+    ).resolve())
+    investigation["focal_paper"] = ({k: v for k, v in focal[0].items() if v is not None}
+                                    if focal else None)
+
+    phase_rows = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
+        f'$ph isa scilit-investigation-phase, has scilit-phase $phase; '
+        f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, '
+        f'"phase": $phase, "created-at": $ph.created-at }};'
+    ).resolve())
+    phases = [{k: v for k, v in r.items() if v is not None} for r in phase_rows]
+    for ph in phases:
+        if ph.get("phase") == "analysis":
+            fn = list(tx.query(
+                f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph["id"])}"; '
+                f'(parent-note: $ph, child-note: $fn) isa alh-note-threading; '
+                f'$fn isa scilit-faceting-note; '
+                f'fetch {{ "id": $fn.id, "name": $fn.name }};'
             ).resolve())
-            if not result:
-                print(json.dumps({"success": False, "error": "Investigation not found"}))
-                sys.exit(1)
-            investigation = {k: v for k, v in result[0].items() if v is not None}
-
-            corpus = list(tx.query(
-                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
-                f'(note: $inv, subject: $c) isa alh-aboutness; $c isa scilit-corpus; '
-                f'fetch {{ "id": $c.id, "name": $c.name }};'
-            ).resolve())
-            investigation["corpus"] = ({k: v for k, v in corpus[0].items() if v is not None}
-                                       if corpus else None)
-
-            phase_rows = list(tx.query(
-                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
-                f'(parent-note: $inv, child-note: $ph) isa alh-note-threading; '
-                f'$ph isa scilit-investigation-phase, has scilit-phase $phase; '
-                f'fetch {{ "id": $ph.id, "name": $ph.name, "content": $ph.content, '
-                f'"phase": $phase, "created-at": $ph.created-at }};'
-            ).resolve())
-            phases = [{k: v for k, v in r.items() if v is not None} for r in phase_rows]
-
-            # Attach faceting notes threaded under the analysis phase(s)
-            for ph in phases:
-                if ph.get("phase") == "analysis":
-                    fn = list(tx.query(
-                        f'match $ph isa scilit-investigation-phase, has id "{escape_string(ph["id"])}"; '
-                        f'(parent-note: $ph, child-note: $fn) isa alh-note-threading; '
-                        f'$fn isa scilit-faceting-note; '
-                        f'fetch {{ "id": $fn.id, "name": $fn.name }};'
-                    ).resolve())
-                    ph["faceting_notes"] = [{k: v for k, v in f.items() if v is not None}
-                                            for f in fn]
-
+            ph["faceting_notes"] = [{k: v for k, v in f.items() if v is not None} for f in fn]
     order = {p: i for i, p in enumerate(INVESTIGATION_PHASES)}
     phases.sort(key=lambda p: order.get(p.get("phase"), 99))
     investigation["phases"] = phases
+
+    if inv_type == "deep-dive":
+        investigation["claims"] = _load_claims(tx, inv_id)
+        investigation["citation_impacts"] = _load_impacts(tx, inv_id)
+
+    return investigation
+
+
+def _load_claims(tx, inv_id):
+    """Load claims (sorted primary/secondary/peripheral) with nested evidence."""
+    claim_rows = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'(parent-note: $inv, child-note: $cl) isa alh-note-threading; '
+        f'$cl isa scilit-claim; '
+        f'fetch {{ "id": $cl.id, "type": $cl.scilit-claim-type, '
+        f'"statement": $cl.scilit-claim-statement }};'
+    ).resolve())
+    claims = [{k: v for k, v in r.items() if v is not None} for r in claim_rows]
+    for cl in claims:
+        ev_rows = list(tx.query(
+            f'match $cl isa scilit-claim, has id "{escape_string(cl["id"])}"; '
+            f'(parent-note: $cl, child-note: $ev) isa alh-note-threading; '
+            f'$ev isa scilit-evidence; '
+            f'fetch {{ "id": $ev.id, "evidence_type": $ev.scilit-evidence-type, '
+            f'"experimental_design": $ev.scilit-experimental-design, '
+            f'"data_summary": $ev.scilit-data-summary, '
+            f'"source_url": $ev.scilit-source-url }};'
+        ).resolve())
+        evidence = [{k: v for k, v in r.items() if v is not None} for r in ev_rows]
+        for ev in evidence:
+            src = list(tx.query(
+                f'match $ev isa scilit-evidence, has id "{escape_string(ev["id"])}"; '
+                f'(note: $ev, subject: $p) isa alh-aboutness; $p isa scilit-paper; '
+                f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi }};'
+            ).resolve())
+            ev["source_paper"] = ({k: v for k, v in src[0].items() if v is not None}
+                                  if src else None)
+        cl["evidence"] = evidence
+    tier = {t: i for i, t in enumerate(CLAIM_TYPES)}
+    claims.sort(key=lambda c: tier.get(c.get("type"), 99))
+    return claims
+
+
+def _load_impacts(tx, inv_id):
+    """Load citation-impact notes with their citing papers."""
+    imp_rows = list(tx.query(
+        f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+        f'(parent-note: $inv, child-note: $imp) isa alh-note-threading; '
+        f'$imp isa scilit-citation-impact; '
+        f'fetch {{ "id": $imp.id, "impact_type": $imp.scilit-impact-type, '
+        f'"impact_summary": $imp.scilit-impact-summary }};'
+    ).resolve())
+    impacts = [{k: v for k, v in r.items() if v is not None} for r in imp_rows]
+    for imp in impacts:
+        cit = list(tx.query(
+            f'match $imp isa scilit-citation-impact, has id "{escape_string(imp["id"])}"; '
+            f'(note: $imp, subject: $p) isa alh-aboutness; $p isa scilit-paper; '
+            f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi }};'
+        ).resolve())
+        imp["citing_paper"] = ({k: v for k, v in cit[0].items() if v is not None}
+                               if cit else None)
+    return impacts
+
+
+def cmd_show_investigation(args):
+    """Show an investigation: metadata, subject, phase notes, and (deep-dive) claims/impacts."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            investigation = _load_investigation(tx, args.id)
+    if investigation is None:
+        print(json.dumps({"success": False, "error": "Investigation not found"}))
+        sys.exit(1)
     print(json.dumps({"success": True, **investigation}, indent=2))
+
+
+def _render_investigation_md(inv):
+    """Render an investigation dict as markdown."""
+    lines = [f"# {inv.get('name', inv['id'])}", ""]
+    meta = []
+    if inv.get("type"):
+        meta.append(f"**Type:** {inv['type']}")
+    if inv.get("status"):
+        meta.append(f"**Status:** {inv['status']}")
+    if inv.get("created-at"):
+        meta.append(f"**Started:** {inv['created-at']}")
+    if meta:
+        lines += [" · ".join(meta), ""]
+    if inv.get("focal_paper"):
+        fp = inv["focal_paper"]
+        doi = f" ({fp['doi']})" if fp.get("doi") else ""
+        lines += [f"**Focal paper:** {fp.get('name', fp['id'])}{doi}", ""]
+    elif inv.get("corpus"):
+        lines += [f"**Corpus:** {inv['corpus'].get('name', inv['corpus']['id'])}", ""]
+    if inv.get("purpose"):
+        lines += ["## Purpose", "", inv["purpose"], ""]
+
+    if inv.get("claims"):
+        lines += ["## Claims & Evidence", ""]
+        for cl in inv["claims"]:
+            lines.append(f"### [{cl.get('type', '?')}] {cl.get('statement', '')}")
+            for ev in cl.get("evidence", []):
+                src = ev.get("source_paper")
+                src_label = ""
+                if src:
+                    doi = f" ({src['doi']})" if src.get("doi") else ""
+                    src_label = f" -> {src.get('name', src['id'])}{doi}"
+                elif ev.get("source_url"):
+                    src_label = f" -> {ev['source_url']}"
+                lines.append(f"- **[{ev.get('evidence_type', '?')}]**{src_label}")
+                if ev.get("experimental_design"):
+                    lines.append(f"  - Design: {ev['experimental_design']}")
+                if ev.get("data_summary"):
+                    lines.append(f"  - Data: {ev['data_summary']}")
+            lines.append("")
+
+    if inv.get("citation_impacts"):
+        counts = {}
+        for imp in inv["citation_impacts"]:
+            t = imp.get("impact_type", "?")
+            counts[t] = counts.get(t, 0) + 1
+        summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+        lines += ["## Citation Impact", "", f"_{len(inv['citation_impacts'])} citing papers: {summary}_", ""]
+        for imp in inv["citation_impacts"]:
+            cit = imp.get("citing_paper")
+            cit_label = ""
+            if cit:
+                doi = f" ({cit['doi']})" if cit.get("doi") else ""
+                cit_label = f" {cit.get('name', cit['id'])}{doi}"
+            lines.append(f"- **[{imp.get('impact_type', '?')}]**{cit_label}: {imp.get('impact_summary', '')}")
+        lines.append("")
+
+    if inv.get("phases"):
+        lines += ["## Phases", ""]
+        for ph in inv["phases"]:
+            lines.append(f"### {ph.get('phase', '?').capitalize()}")
+            if ph.get("content"):
+                lines += [ph["content"], ""]
+            for fn in ph.get("faceting_notes", []):
+                lines.append(f"- Faceting pipeline: {fn.get('name', fn['id'])}")
+            lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_export_investigation(args):
+    """Export an investigation as markdown (default) or JSON."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            investigation = _load_investigation(tx, args.id)
+    if investigation is None:
+        print(json.dumps({"success": False, "error": "Investigation not found"}))
+        sys.exit(1)
+    if getattr(args, "format", "md") == "json":
+        print(json.dumps({"success": True, **investigation}, indent=2))
+    else:
+        print(_render_investigation_md(investigation))
 
 
 def cmd_record_phase(args):
@@ -2207,6 +2423,226 @@ def cmd_set_status(args):
         "success": True,
         "investigation": args.investigation,
         "status": args.status,
+    }, indent=2))
+
+
+# =============================================================================
+# DEEP-DIVE (single-paper) INVESTIGATIONS
+# =============================================================================
+# A `deep-dive` investigation resolves every claim in one focal scilit-paper down
+# to primary evidence (tracing cited papers) and surveys how citing papers received
+# those claims. It reuses the investigation spine (phases, status) but its aboutness
+# subject is a single scilit-paper (not a corpus), and it threads scilit-claim /
+# scilit-citation-impact notes under it. Source/citing papers are real scilit-paper
+# entities, found-or-ingested on trace, linked via alh-aboutness.
+
+CLAIM_TYPES = ["primary", "secondary", "peripheral"]
+EVIDENCE_TYPES = ["experimental", "observational", "computational",
+                  "review", "theoretical", "anecdotal"]
+IMPACT_TYPES = ["supports", "refutes", "extends", "nuances", "uses", "unrelated"]
+
+
+def _find_or_ingest_paper(driver, doi=None, pmid=None, paper_id=None):
+    """Resolve a paper to a scilit-paper id, ingesting it if absent.
+
+    Returns the scilit-paper id, or None if it could not be resolved.
+    - paper_id: verify it exists and return it.
+    - doi/pmid: return the existing paper, else fetch + insert a new one.
+    """
+    if paper_id:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            found = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+                f'fetch {{ "id": $p.id }};'
+            ).resolve())
+        return found[0]["id"] if found else None
+
+    if doi:
+        doi = doi.strip()
+        if doi.startswith("https://doi.org/"):
+            doi = doi[len("https://doi.org/"):]
+        existing = paper_exists(driver, doi=doi)
+        if existing:
+            return existing
+        paper = fetch_by_doi_openalex(doi)
+        if not paper or not paper.get("title"):
+            paper = fetch_by_doi_ncbi(doi)
+        if not paper:
+            return None
+        return insert_paper(driver, paper)
+
+    if pmid:
+        pmid = str(pmid).strip()
+        existing = paper_exists(driver, pmid=pmid)
+        if existing:
+            return existing
+        epmc_paper = fetch_by_pmid_epmc(pmid)
+        if epmc_paper:
+            return insert_epmc_paper(driver, epmc_paper, None)
+        papers = search_pubmed(f"{pmid}[uid]", max_results=1)
+        if papers:
+            return insert_paper(driver, papers[0])
+        return None
+
+    return None
+
+
+def _resolve_paper_arg(driver, paper_arg):
+    """Resolve a --paper / --source / --citing argument (a scilit-paper id or a DOI)."""
+    if paper_arg.startswith("scilit-paper") or paper_arg.startswith("scilit-preprint"):
+        return _find_or_ingest_paper(driver, paper_id=paper_arg)
+    return _find_or_ingest_paper(driver, doi=paper_arg)
+
+
+def cmd_add_claim(args):
+    """Add a scilit-claim threaded under a deep-dive investigation."""
+    if args.type not in CLAIM_TYPES:
+        print(json.dumps({"success": False,
+                          "error": f"Invalid claim type. Use one of: {', '.join(CLAIM_TYPES)}"}))
+        sys.exit(1)
+    claim_id = generate_id("scclaim")
+    ts = get_timestamp()
+    name = args.statement[:60]
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            inv = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'fetch {{ "id": $inv.id }};'
+            ).resolve())
+            if not inv:
+                print(json.dumps({"success": False, "error": "Investigation not found"}))
+                sys.exit(1)
+            tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'insert $cl isa scilit-claim, has id "{claim_id}", '
+                f'has name "{escape_string(name)}", '
+                f'has scilit-claim-type "{escape_string(args.type)}", '
+                f'has scilit-claim-statement "{escape_string(args.statement)}", '
+                f'has created-at {ts}; '
+                f'(parent-note: $inv, child-note: $cl) isa alh-note-threading;'
+            ).resolve()
+            tx.commit()
+    print(json.dumps({
+        "success": True,
+        "claim_id": claim_id,
+        "investigation": args.investigation,
+        "type": args.type,
+        "statement": args.statement,
+    }, indent=2))
+
+
+def cmd_add_evidence(args):
+    """Add a scilit-evidence note threaded under a claim; link its source paper."""
+    if args.evidence_type not in EVIDENCE_TYPES:
+        print(json.dumps({"success": False,
+                          "error": f"Invalid evidence type. Use one of: {', '.join(EVIDENCE_TYPES)}"}))
+        sys.exit(1)
+    ev_id = generate_id("scev")
+    ts = get_timestamp()
+    with get_driver() as driver:
+        # Verify the claim is threaded under the investigation.
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            claim = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'$cl isa scilit-claim, has id "{escape_string(args.claim_id)}"; '
+                f'(parent-note: $inv, child-note: $cl) isa alh-note-threading; '
+                f'fetch {{ "id": $cl.id }};'
+            ).resolve())
+        if not claim:
+            print(json.dumps({"success": False,
+                              "error": "Claim not found under this investigation"}))
+            sys.exit(1)
+
+        # Find-or-ingest the source paper (if any).
+        source_id = None
+        if args.source_id or args.source_doi:
+            source_id = _resolve_paper_arg(driver, args.source_id or args.source_doi)
+            if not source_id:
+                print(json.dumps({"success": False,
+                                  "error": f"Could not resolve source paper: "
+                                           f"{args.source_id or args.source_doi}"}))
+                sys.exit(1)
+
+        name = (args.data_summary or args.experimental_design or
+                f"{args.evidence_type} evidence")[:60]
+        opt = ""
+        if args.experimental_design:
+            opt += f', has scilit-experimental-design "{escape_string(args.experimental_design)}"'
+        if args.data_summary:
+            opt += f', has scilit-data-summary "{escape_string(args.data_summary)}"'
+        if args.source_url:
+            opt += f', has scilit-source-url "{escape_string(args.source_url)}"'
+
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(
+                f'match $cl isa scilit-claim, has id "{escape_string(args.claim_id)}"; '
+                f'insert $ev isa scilit-evidence, has id "{ev_id}", '
+                f'has name "{escape_string(name)}", '
+                f'has scilit-evidence-type "{escape_string(args.evidence_type)}"{opt}, '
+                f'has created-at {ts}; '
+                f'(parent-note: $cl, child-note: $ev) isa alh-note-threading;'
+            ).resolve()
+            if source_id:
+                tx.query(
+                    f'match $ev isa scilit-evidence, has id "{ev_id}"; '
+                    f'$src isa scilit-paper, has id "{escape_string(source_id)}"; '
+                    f'insert (note: $ev, subject: $src) isa alh-aboutness;'
+                ).resolve()
+            tx.commit()
+    print(json.dumps({
+        "success": True,
+        "evidence_id": ev_id,
+        "claim_id": args.claim_id,
+        "evidence_type": args.evidence_type,
+        "source_paper": source_id,
+    }, indent=2))
+
+
+def cmd_add_citation_impact(args):
+    """Record how a citing paper received the focal paper, threaded under the investigation."""
+    if args.impact_type not in IMPACT_TYPES:
+        print(json.dumps({"success": False,
+                          "error": f"Invalid impact type. Use one of: {', '.join(IMPACT_TYPES)}"}))
+        sys.exit(1)
+    imp_id = generate_id("scimpact")
+    ts = get_timestamp()
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            inv = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'fetch {{ "id": $inv.id }};'
+            ).resolve())
+        if not inv:
+            print(json.dumps({"success": False, "error": "Investigation not found"}))
+            sys.exit(1)
+
+        citing_id = _resolve_paper_arg(driver, args.citing_id or args.citing_doi)
+        if not citing_id:
+            print(json.dumps({"success": False,
+                              "error": f"Could not resolve citing paper: "
+                                       f"{args.citing_id or args.citing_doi}"}))
+            sys.exit(1)
+
+        name = args.impact_summary[:60]
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.investigation)}"; '
+                f'$cit isa scilit-paper, has id "{escape_string(citing_id)}"; '
+                f'insert $imp isa scilit-citation-impact, has id "{imp_id}", '
+                f'has name "{escape_string(name)}", '
+                f'has scilit-impact-type "{escape_string(args.impact_type)}", '
+                f'has scilit-impact-summary "{escape_string(args.impact_summary)}", '
+                f'has created-at {ts}; '
+                f'(parent-note: $inv, child-note: $imp) isa alh-note-threading; '
+                f'(note: $imp, subject: $cit) isa alh-aboutness;'
+            ).resolve()
+            tx.commit()
+    print(json.dumps({
+        "success": True,
+        "impact_id": imp_id,
+        "investigation": args.investigation,
+        "impact_type": args.impact_type,
+        "citing_paper": citing_id,
     }, indent=2))
 
 
@@ -2339,8 +2775,11 @@ def main():
 
     # create-investigation
     p = subparsers.add_parser("create-investigation",
-        help="Create a named investigation note linked to a corpus")
-    p.add_argument("--collection", required=True, help="scilit-corpus ID the investigation is about")
+        help="Create a named investigation (corpus or deep-dive)")
+    p.add_argument("--type", choices=["corpus", "deep-dive"], default="corpus",
+        help="Investigation type (default: corpus)")
+    p.add_argument("--collection", help="scilit-corpus ID (required for --type corpus)")
+    p.add_argument("--paper", help="Focal paper DOI or scilit-paper ID (required for --type deep-dive)")
     p.add_argument("--name", required=True, help="Investigation title")
     p.add_argument("--purpose", required=True, help="Purpose/goal (markdown) -> note content")
     p.add_argument("--status", help="Initial lifecycle status (default: scoping)")
@@ -2374,6 +2813,43 @@ def main():
     p = subparsers.add_parser("set-status", help="Set an investigation's lifecycle status")
     p.add_argument("--investigation", required=True, help="Investigation ID (scinv-...)")
     p.add_argument("--status", required=True, help="New status value")
+
+    # add-claim (deep-dive)
+    p = subparsers.add_parser("add-claim",
+        help="Add a claim to a deep-dive investigation")
+    p.add_argument("--investigation", required=True, help="Investigation ID (scinv-...)")
+    p.add_argument("--type", required=True, choices=CLAIM_TYPES, help="Claim type")
+    p.add_argument("--statement", required=True, help="Precise, falsifiable claim text")
+
+    # add-evidence (deep-dive)
+    p = subparsers.add_parser("add-evidence",
+        help="Add evidence for a claim; links a source paper (found-or-ingested)")
+    p.add_argument("--investigation", required=True, help="Investigation ID (scinv-...)")
+    p.add_argument("--claim-id", required=True, dest="claim_id", help="Claim ID (scclaim-...)")
+    p.add_argument("--evidence-type", required=True, dest="evidence_type",
+        choices=EVIDENCE_TYPES, help="Evidence type")
+    p.add_argument("--source-doi", dest="source_doi", help="Source paper DOI (found-or-ingested)")
+    p.add_argument("--source-id", dest="source_id", help="Source scilit-paper ID")
+    p.add_argument("--source-url", dest="source_url", help="Source URL fallback (no DOI)")
+    p.add_argument("--experimental-design", dest="experimental_design", help="Design description")
+    p.add_argument("--data-summary", dest="data_summary", help="Actual data / results")
+
+    # add-citation-impact (deep-dive)
+    p = subparsers.add_parser("add-citation-impact",
+        help="Record how a citing paper received the focal paper")
+    p.add_argument("--investigation", required=True, help="Investigation ID (scinv-...)")
+    p.add_argument("--citing-doi", dest="citing_doi", help="Citing paper DOI (found-or-ingested)")
+    p.add_argument("--citing-id", dest="citing_id", help="Citing scilit-paper ID")
+    p.add_argument("--impact-type", required=True, dest="impact_type",
+        choices=IMPACT_TYPES, help="Impact type")
+    p.add_argument("--impact-summary", required=True, dest="impact_summary",
+        help="1-2 sentence description")
+
+    # export-investigation
+    p = subparsers.add_parser("export-investigation",
+        help="Export an investigation as markdown or JSON")
+    p.add_argument("--id", required=True, help="Investigation ID (scinv-...)")
+    p.add_argument("--format", choices=["md", "json"], default="md", help="Output format")
 
     args = parser.parse_args()
 
@@ -2416,6 +2892,10 @@ def main():
         "record-phase": cmd_record_phase,
         "link-analysis": cmd_link_analysis,
         "set-status": cmd_set_status,
+        "add-claim": cmd_add_claim,
+        "add-evidence": cmd_add_evidence,
+        "add-citation-impact": cmd_add_citation_impact,
+        "export-investigation": cmd_export_investigation,
     }
 
     try:

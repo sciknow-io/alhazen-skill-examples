@@ -471,13 +471,12 @@ pairs to tabulate, and `output_attr_map` routes `crosstab_markdown → content`.
 
 ## Investigations
 
-An **investigation** is a named, dated, purpose-driven inquiry over a corpus — the scilit
-analogue of a tech-recon investigation, but with an **explicit phase structure**. It is modelled
-as a note **about** a `scilit-corpus` (`alh-aboutness`): the note's `name` is the title, its
-`content` is the purpose/goal, and `created-at` is the start date, plus a
-`scilit-investigation-status` lifecycle attribute. Each phase is a single
-`scilit-investigation-phase` note threaded under it (`alh-note-threading`) and tagged with a
-`scilit-phase` attribute. The canonical lifecycle is:
+An **investigation** is a named, dated, purpose-driven inquiry — the scilit analogue of a
+tech-recon investigation, but with an **explicit phase structure**. It is modelled as a note
+**about** a subject (`alh-aboutness`): the note's `name` is the title, its `content` is the
+purpose/goal, and `created-at` is the start date, plus a `scilit-investigation-status` lifecycle
+attribute. Each phase is a single `scilit-investigation-phase` note threaded under it
+(`alh-note-threading`) and tagged with a `scilit-phase` attribute. The canonical lifecycle is:
 
 ```
 discovery → ingest → sensemaking → analysis → report
@@ -487,15 +486,41 @@ The **analysis** phase reuses the analysis machinery already built: existing
 `scilit-faceting-note` pipelines are threaded under the analysis phase note (so an investigation
 references — rather than re-implements — faceting runs).
 
-### `create-investigation` -- Start an investigation over a corpus
+### Investigation types
+
+`scilit-investigation-type` selects the kind of inquiry (the 5-phase spine is shared; the type
+changes phase *contents* and attached artifacts):
+
+| Type | Subject | Adds |
+|---|---|---|
+| `corpus` (default) | a `scilit-corpus` | faceting pipelines under analysis |
+| `deep-dive` | a single focal `scilit-paper` | claims → evidence → source papers, plus citation-impact notes |
+
+A **deep-dive** resolves *every* claim in one focal paper down to primary evidence (tracing cited
+papers, found-or-ingested as real `scilit-paper` entities) and surveys how citing papers received
+those claims. Claims are threaded under the investigation; evidence under each claim; each evidence
+and each citation-impact links its source/citing paper via `alh-aboutness`.
+
+### `create-investigation` -- Start a corpus or deep-dive investigation
 
 ```bash
+# corpus investigation (default)
 uv run python .claude/skills/scientific-literature/scientific_literature.py create-investigation \
+    --type corpus \
     --collection collection-cais2026-papers \
     --name "CAIS agent-safety landscape" \
     --purpose "## Goal\nMap the agent-safety subfield across the CAIS 2026 corpus." \
     --status scoping
-# -> { "id": "scinv-...", ... }
+# -> { "id": "scinv-...", "type": "corpus", ... }
+
+# deep-dive investigation over one focal paper (DOI or scilit-paper id)
+uv run python .claude/skills/scientific-literature/scientific_literature.py create-investigation \
+    --type deep-dive \
+    --paper "10.1038/s41587-020-0700-8" \
+    --name "Deep dive: prime editing" \
+    --purpose "## Goal\nResolve every claim to primary evidence." \
+    --status scoping
+# -> { "id": "scinv-...", "type": "deep-dive", "focal_paper": "scilit-paper-...", ... }
 ```
 
 ### `record-phase` -- Upsert a phase note (and optionally advance status)
@@ -543,6 +568,52 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py list
 uv run python .claude/skills/scientific-literature/scientific_literature.py set-status \
     --investigation scinv-... --status report
 ```
+
+### Deep-dive commands (claims, evidence, citation impact)
+
+These operate on a `--type deep-dive` investigation. Claims, evidence, and impacts land naturally
+in the `analysis` phase; the writeup belongs in `report` (use `record-phase`).
+
+```bash
+# 1. Add a claim (type: primary | secondary | peripheral)
+uv run python .claude/skills/scientific-literature/scientific_literature.py add-claim \
+    --investigation scinv-... \
+    --type primary \
+    --statement "Prime editing installs all 12 base-to-base conversions without DSBs."
+# -> { "claim_id": "scclaim-...", ... }
+
+# 2. Add evidence for a claim, targeted by --claim-id. A --source-doi (or --source-id)
+#    is found-or-ingested as a real scilit-paper and linked via alh-aboutness.
+#    evidence-type: experimental | observational | computational | review | theoretical | anecdotal
+uv run python .claude/skills/scientific-literature/scientific_literature.py add-evidence \
+    --investigation scinv-... \
+    --claim-id scclaim-... \
+    --evidence-type experimental \
+    --source-doi "10.1126/science.aba8853" \
+    --experimental-design "HEK293T transfection, amplicon sequencing" \
+    --data-summary "Up to 51% editing efficiency at target loci."
+# -> { "evidence_id": "scev-...", "source_paper": "scilit-paper-...", ... }
+
+# 3. Record how a citing paper received the focal paper.
+#    impact-type: supports | refutes | extends | nuances | uses | unrelated
+uv run python .claude/skills/scientific-literature/scientific_literature.py add-citation-impact \
+    --investigation scinv-... \
+    --citing-doi "10.1038/s41586-021-03609-w" \
+    --impact-type extends \
+    --impact-summary "Extends prime editing to primary human cells in vivo."
+# -> { "impact_id": "scimpact-...", "citing_paper": "scilit-paper-...", ... }
+```
+
+### `export-investigation` -- Markdown or JSON report
+
+```bash
+uv run python .claude/skills/scientific-literature/scientific_literature.py export-investigation \
+    --id scinv-... --format md   # or: --format json
+```
+
+`show-investigation` returns the same data as JSON; for a deep-dive it includes `focal_paper`,
+`claims` (sorted primary → secondary → peripheral, each with nested `evidence` and its
+`source_paper`), and `citation_impacts` (each with its `citing_paper`).
 
 ---
 
