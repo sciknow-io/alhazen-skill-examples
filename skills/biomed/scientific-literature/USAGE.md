@@ -314,6 +314,115 @@ scilit-paper                     collection: "alhazen_papers"
 
 ---
 
+## Feature Faceting
+
+Topic clustering (`cluster`) finds *one* axis of variation -- semantic similarity of
+title+abstract. That works when a corpus is genuinely multi-**topic**. But many corpora
+are multi-**facet** instead: nearly every item is "the same kind of thing" (e.g. "an LLM
+agent system applied to domain X optimizing property Y"), differing along several
+*orthogonal* dimensions at once. On such a corpus a single embedding clustering
+**saturates** -- it collapses into one dominant blob plus a large noise tail.
+
+Feature faceting is the follow-on workflow: instead of forcing one clustering, classify
+each item along several orthogonal categorical **facets**, store them as namespaced
+keyword tags, and study the **cross-tabulation**. Dense cells show where the field is
+piling up; empty cells are white space (candidate gaps).
+
+### When to reach for it (the saturation signal)
+
+Run `cluster --dry-run` first. Faceting is warranted when you see:
+
+- **One mega-cluster** holding a large fraction of the corpus, plus
+- **High noise** (often 20-35%), where the noise items are *not* junk but each
+  distinctive on some axis *other than topic* (a unique domain, a position/critique vs.
+  a system, an unusual method). Inspect the noise titles: if they look "interesting and
+  varied" rather than "off-topic", the corpus is multi-facet.
+
+> Diagnostic heuristic: if folding a second sub-corpus in (e.g. demos alongside papers)
+> *reduces* cluster count and *grows* the mega-cluster, topic-space is saturated.
+
+### Facet conventions
+
+Each facet is a small enum; assign **one primary value** per item per facet (cross-tabs
+need a single cell). Store as `scilit-keyword` using a `facet:value` namespace so the
+existing `list-by-keyword` command and the cluster tag-writer stay interoperable:
+
+```
+topology:single-agent         stage:application-development     concern:cost-efficiency
+topology:multi-agent          contribution:system-framework-tool  domain:scientific-discovery
+topology:compound-non-agentic autonomy:oversight-hitl           memory:persistent-memory
+                              se-agent:true   (boolean: tag only when true)
+```
+
+A reusable 8-facet schema for agentic / LLM-systems corpora (adapt per corpus):
+
+| # | Facet | Values |
+|---|-------|--------|
+| 1 | **topology** | `single-agent` · `multi-agent` (>=2 coordinating) · `compound-non-agentic` (fixed LLM pipeline, no autonomy) |
+| 2 | **stage** (where in the stack) | `pre-training` · `post-training` (RL/reasoning/prompt-program opt) · `serving-inference` · `application-development` · `evaluation` · `ops-governance` |
+| 3 | **concern** (the "-ility" foregrounded) | `cost-efficiency` · `latency-throughput` · `safety-security` · `reliability-robustness` · `correctness-verification` · `fairness-equity` · `privacy-compliance` · `energy` · `interpretability-legibility` |
+| 4 | **contribution** (what the item *is*) | `system-framework-tool` · `method-algorithm` · `empirical-study` · `benchmark-dataset` · `theory-formalism` · `position-critique` |
+| 5 | **domain** (application area) | `general` (domain-agnostic) · `software-eng` · `data-analytics` · `scientific-discovery` · `cybersecurity` · `clinical` · `ecommerce-marketing` · `iot-embedded` · `hardware-eda` · `agent-society` · `finance-insurance` · `legal-policy` · `devops-sre` · `quantum` · ... (open-ended) |
+| 6 | **se-agent** (boolean) | `true` for software-engineering / coding agents |
+| 7 | **autonomy** (human-in-the-loop) | `autonomous` (closes its own loop) · `oversight-hitl` (human approves/gates) · `human-collaborative` (human is a co-actor) |
+| 8 | **memory** (state across turns) | `stateless` · `context-engineering` (in-context/RAG, no durable store) · `persistent-memory` (writes & reads a durable memory store) |
+
+`concern` is usually the most *interesting* facet because it is the axis topic-clustering
+keeps entangling. `stage x concern` is the recommended headline matrix; `contribution x stage`
+and `memory x topology` are strong secondary cuts.
+
+### Workflow
+
+```bash
+# 1. Embed + diagnose saturation (dry-run)
+VOYAGE_API_KEY=xxx ... cluster --collection <id> --min-cluster-size 5 --dry-run
+#    -> one big cluster + high noise  => proceed to faceting
+
+# 2. Classify each item along the facets. This is an LLM (Claude) reading
+#    title+abstract per item and assigning one primary value per facet --
+#    there is no CLI subcommand for it; it is a sensemaking step.
+
+# 3. Write the classifications back as namespaced keyword tags via TypeQL
+#    (idempotent: skip a tag the paper already has):
+#       match $p isa scilit-paper, has id "<pid>";
+#       insert $p has scilit-keyword "concern:safety-security";
+
+# 4. Query any facet value with the existing command:
+... list-by-keyword --keyword "concern:safety-security"
+
+# 5. Cross-tabulate (facet x facet) to read dense cells (crowding) and
+#    empty cells (white space / gaps).
+```
+
+### Worked example -- ACM CAIS 2026 (105 items: 60 papers + 45 demos)
+
+Topic clustering on the 60 papers gave a clean 4-way split that matched the conference's
+own editorial pillars. But folding the 45 demos in collapsed it to a single 57-item
+mega-cluster + 17 noise -> saturation. Faceting the full 105 along all 8 facets yielded
+interpretable marginals and cross-tabs, e.g.:
+
+- **topology**: 67 single-agent / 23 multi-agent / 15 compound-non-agentic.
+- **stage**: application-development 45, evaluation 21, ops-governance 15, post-training 12,
+  serving-inference 12, **pre-training 0** -- CAIS is a "right-of-the-stack" venue.
+- **contribution**: system-framework-tool 54 (a *demo* venue -- artifacts dominate),
+  method-algorithm 28, empirical-study 11, benchmark-dataset 9, theory-formalism 2,
+  position-critique 1.
+- **domain**: 60 `general` (domain-agnostic infrastructure) vs. a long tail of 14 verticals
+  (data-analytics 9, software-eng 8, scientific-discovery 5, ...) -- the field's center of
+  gravity is reusable substrate, not vertical applications.
+- **autonomy**: 90 autonomous / 11 human-collaborative / **4 oversight-hitl** -- explicit
+  human-gating is rare and lives *only* in single-agent systems.
+- **memory**: 94 stateless / 7 persistent-memory / 4 context-engineering -- durable memory is
+  still a frontier; persistent memory is **6/7 single-agent** (multi-agent memory is white space).
+- **cross-tab cells**: `contribution x stage` -- benchmark-dataset sits entirely in `evaluation`
+  (9/9), method-algorithm concentrates in `post-training` (10) while system-framework-tool owns
+  `application-development` (33); `memory x topology` -- multi-agent persistent memory = **0**.
+
+The payoff is the matrix, not the clusters: it surfaces both crowding and gaps that a
+single topic clustering cannot.
+
+---
+
 ## Source Connector Details
 
 ### Europe PMC
