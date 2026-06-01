@@ -228,6 +228,15 @@ entity scilit-methodology-note sub alh-note,
     owns scilit-note-type;
 
 
+# SCILIT-FACETING-NOTE - A re-runnable feature-faceting workflow over one or more scilit corpora.
+# The worked example of the general alh-analysis-pipeline-note: stores a self-contained Hamilton
+# module (alh-pipeline-script) that fetches the corpora, writes facet:value scilit-keyword tags,
+# and computes cross-tabulations; config (alh-pipeline-config) carries the facet schema + per-paper
+# assignments. Linked to its source scilit-corpus collections via alh-aboutness.
+entity scilit-faceting-note sub alh-analysis-pipeline-note,
+    owns scilit-note-type;
+
+
 # -----------------------------------------------------------------------------
 # RELATION TYPES - Scientific Literature Specific
 # -----------------------------------------------------------------------------

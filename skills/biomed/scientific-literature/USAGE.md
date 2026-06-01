@@ -421,6 +421,52 @@ interpretable marginals and cross-tabs, e.g.:
 The payoff is the matrix, not the clusters: it surfaces both crowding and gaps that a
 single topic clustering cannot.
 
+### Persisting a faceting run (scilit-faceting-note)
+
+Steps 2-5 above are otherwise throwaway scripts. To make a faceting run **durable and
+re-runnable**, store it as a `scilit-faceting-note` — a subtype of the core
+`alh-analysis-pipeline-note` (a stored, executable [Hamilton](https://hamilton.dagworks.io/)
+pipeline). The note holds the pipeline source (`alh-pipeline-script`), the exact inputs
+(`alh-pipeline-config`: facet schema + per-paper assignments + corpus ids), links to its source
+corpora via `alh-aboutness`, and — after a run — the rendered cross-tab report in `content`.
+
+The pipeline module (`pipelines/pipeline_faceting.py`) is a self-contained Hamilton DAG:
+
+```
+collection_ids ─▶ corpus_items ─▶ written_tags ─▶ facet_rows ─▶ crosstab_markdown
+assignments / facet_schema ─────▶ written_tags
+facet_schema / crosstabs ──────────────────────▶ crosstab_markdown
+```
+
+- `corpus_items` fetches the `scilit-paper` members of each corpus.
+- `written_tags` **idempotently** writes `<facet>:<value>` `scilit-keyword` tags (skips any
+  already present — so re-running never duplicates or overwrites).
+- `facet_rows` reads the tags back per paper.
+- `crosstab_markdown` (the terminal output) renders marginals + the requested cross-tabs.
+
+Create and run it via the **core** typedb-notebook commands (no scilit-specific CLI):
+
+```bash
+# Create the note (links it to both source corpora; stores script + config)
+uv run python skills/typedb-notebook/typedb_notebook.py create-pipeline-note \
+    --type scilit-faceting-note \
+    --collections collection-cais2026-papers,collection-cais2026-demos \
+    --script @pipelines/pipeline_faceting.py \
+    --config @cais_faceting_config.json \
+    --name "ACM CAIS 2026 — 8-facet faceting"
+
+# Execute it: (idempotent) tag write + cross-tab report written to the note's content
+uv run python skills/typedb-notebook/typedb_notebook.py run-pipeline-note --id <scfn-id>
+
+# Round-trip the stored script, config, and rendered report
+uv run python skills/typedb-notebook/typedb_notebook.py show-pipeline-note --id <scfn-id>
+```
+
+The `config` (`alh-pipeline-config`) is an id-keyed JSON: `inputs.assignments` maps each
+paper id → `{facet: value}`, `inputs.facet_schema` declares each facet's `namespace` (and a
+`boolean` flag for presence-only facets like `se-agent`), `inputs.crosstabs` lists the facet
+pairs to tabulate, and `output_attr_map` routes `crosstab_markdown → content`.
+
 ---
 
 ## Source Connector Details
