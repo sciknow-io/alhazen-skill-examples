@@ -255,9 +255,17 @@ def insert_paper(driver, paper: dict) -> str:
 
 
 def add_to_collection(driver, paper_id: str, collection_id: str):
-    """Add a paper to a collection."""
+    """Add a paper to a collection (idempotent — skips if already a member)."""
     timestamp = get_timestamp()
     with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+        existing = list(tx.query(
+            f'match $c isa alh-collection, has id "{collection_id}"; '
+            f'$p isa scilit-paper, has id "{paper_id}"; '
+            f'(collection: $c, member: $p) isa alh-collection-membership; '
+            f'fetch {{ "id": $p.id }};'
+        ).resolve())
+        if existing:
+            return
         tx.query(
             f'match $c isa alh-collection, has id "{collection_id}"; '
             f'$p isa scilit-paper, has id "{paper_id}"; '
@@ -1231,16 +1239,18 @@ def cmd_list(args):
 
 
 def cmd_list_collections(args):
-    """List all collections created from searches."""
+    """List all scilit-corpus collections — search corpora (with a logical query)
+    and investigation paper sets (curated by trace, no logical query)."""
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
             results = list(tx.query(
-                'match $c isa scilit-corpus, has alh-logical-query $q; '
+                'match $c isa scilit-corpus; '
                 'fetch { "id": $c.id, "name": $c.name, "description": $c.description, '
                 '"logical-query": $c.alh-logical-query };'
             ).resolve())
 
-    print(json.dumps({"success": True, "collections": results, "count": len(results)}, indent=2))
+    collections = [{k: v for k, v in r.items() if v is not None} for r in results]
+    print(json.dumps({"success": True, "collections": collections, "count": len(collections)}, indent=2))
 
 
 def cmd_list_by_keyword(args):
@@ -1966,6 +1976,46 @@ def _ensure_phase_note(tx, inv_id, phase, content=None):
     return ph_id, True
 
 
+def _ensure_investigation_collection(driver, inv_id, inv_name=None):
+    """Resolve (or lazily create) the dedicated scilit-corpus that collects an
+    investigation's papers. For a corpus investigation this is the source corpus
+    (already aboutness-linked); for a deep-dive it is a dedicated traced corpus,
+    created on first use. Returns the collection id. Idempotent."""
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+        existing = list(tx.query(
+            f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+            f'(note: $inv, subject: $c) isa alh-aboutness; $c isa scilit-corpus; '
+            f'fetch {{ "id": $c.id }};'
+        ).resolve())
+    if existing:
+        return existing[0]["id"]
+
+    if inv_name is None:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            inv = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+                f'fetch {{ "name": $inv.name }};'
+            ).resolve())
+        inv_name = (inv[0].get("name") if inv else None) or inv_id
+
+    coll_id = generate_id("collection")
+    ts = get_timestamp()
+    name = f"{inv_name} - papers"
+    desc = f"Papers traced by investigation {inv_id}"
+    with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+        tx.query(
+            f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
+            f'insert $c isa scilit-corpus, has id "{coll_id}", '
+            f'has name "{escape_string(name)}", '
+            f'has description "{escape_string(desc)}", '
+            f'has alh-is-extensional false, '
+            f'has created-at {ts}; '
+            f'(note: $inv, subject: $c) isa alh-aboutness;'
+        ).resolve()
+        tx.commit()
+    return coll_id
+
+
 def cmd_create_investigation(args):
     """Create a named investigation note. Typed `corpus` (about a scilit-corpus) or
     `deep-dive` (about a single focal scilit-paper)."""
@@ -2001,12 +2051,15 @@ def cmd_create_investigation(args):
                     f'(note: $inv, subject: $p) isa alh-aboutness;'
                 ).resolve()
                 tx.commit()
+            coll_id = _ensure_investigation_collection(driver, inv_id, args.name)
+            add_to_collection(driver, focal_id, coll_id)
         print(json.dumps({
             "success": True,
             "id": inv_id,
             "name": args.name,
             "type": "deep-dive",
             "focal_paper": focal_id,
+            "collection": coll_id,
             "status": status,
         }, indent=2))
         return
@@ -2126,6 +2179,24 @@ def _load_investigation(tx, inv_id):
     ).resolve())
     investigation["focal_paper"] = ({k: v for k, v in focal[0].items() if v is not None}
                                     if focal else None)
+
+    # Paper collection (members are papers only). For a corpus investigation this is
+    # the source corpus; for a deep-dive it is the dedicated traced corpus.
+    coll = investigation.get("corpus")
+    if coll:
+        paper_rows = list(tx.query(
+            f'match $c isa scilit-corpus, has id "{escape_string(coll["id"])}"; '
+            f'(collection: $c, member: $p) isa alh-collection-membership; '
+            f'$p isa scilit-paper; '
+            f'fetch {{ "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, '
+            f'"year": $p.scilit-publication-year }};'
+        ).resolve())
+        papers = [{k: v for k, v in r.items() if v is not None} for r in paper_rows]
+        papers.sort(key=lambda p: p.get("year") or 0, reverse=True)
+        investigation["papers"] = papers
+        investigation["collection"] = {"id": coll["id"],
+                                       "name": coll.get("name"),
+                                       "count": len(papers)}
 
     phase_rows = list(tx.query(
         f'match $inv isa scilit-investigation, has id "{escape_string(inv_id)}"; '
@@ -2589,6 +2660,9 @@ def cmd_add_evidence(args):
                     f'insert (note: $ev, subject: $src) isa alh-aboutness;'
                 ).resolve()
             tx.commit()
+        if source_id:
+            coll_id = _ensure_investigation_collection(driver, args.investigation)
+            add_to_collection(driver, source_id, coll_id)
     print(json.dumps({
         "success": True,
         "evidence_id": ev_id,
@@ -2637,12 +2711,68 @@ def cmd_add_citation_impact(args):
                 f'(note: $imp, subject: $cit) isa alh-aboutness;'
             ).resolve()
             tx.commit()
+        coll_id = _ensure_investigation_collection(driver, args.investigation)
+        add_to_collection(driver, citing_id, coll_id)
     print(json.dumps({
         "success": True,
         "impact_id": imp_id,
         "investigation": args.investigation,
         "impact_type": args.impact_type,
         "citing_paper": citing_id,
+    }, indent=2))
+
+
+def cmd_backfill_investigation_collection(args):
+    """Backfill an investigation's paper collection from its existing aboutness
+    links: focal paper (deep-dive), evidence source papers, and citing papers.
+    Idempotent — safe to re-run."""
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            inv = list(tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'fetch {{ "id": $inv.id, "name": $inv.name }};'
+            ).resolve())
+        if not inv:
+            print(json.dumps({"success": False, "error": "Investigation not found"}))
+            sys.exit(1)
+        inv_name = inv[0].get("name") or args.id
+        coll_id = _ensure_investigation_collection(driver, args.id, inv_name)
+
+        paper_ids = set()
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            # Focal paper (deep-dive): investigation -> aboutness -> scilit-paper.
+            for r in tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'(note: $inv, subject: $p) isa alh-aboutness; $p isa scilit-paper; '
+                f'fetch {{ "id": $p.id }};'
+            ).resolve():
+                paper_ids.add(r["id"])
+            # Evidence source papers: inv -> claim -> evidence -> aboutness -> paper.
+            for r in tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'(parent-note: $inv, child-note: $cl) isa alh-note-threading; $cl isa scilit-claim; '
+                f'(parent-note: $cl, child-note: $ev) isa alh-note-threading; $ev isa scilit-evidence; '
+                f'(note: $ev, subject: $p) isa alh-aboutness; $p isa scilit-paper; '
+                f'fetch {{ "id": $p.id }};'
+            ).resolve():
+                paper_ids.add(r["id"])
+            # Citing papers: inv -> citation-impact -> aboutness -> paper.
+            for r in tx.query(
+                f'match $inv isa scilit-investigation, has id "{escape_string(args.id)}"; '
+                f'(parent-note: $inv, child-note: $imp) isa alh-note-threading; $imp isa scilit-citation-impact; '
+                f'(note: $imp, subject: $p) isa alh-aboutness; $p isa scilit-paper; '
+                f'fetch {{ "id": $p.id }};'
+            ).resolve():
+                paper_ids.add(r["id"])
+
+        for pid in paper_ids:
+            add_to_collection(driver, pid, coll_id)
+
+    print(json.dumps({
+        "success": True,
+        "investigation": args.id,
+        "collection": coll_id,
+        "papers_added": len(paper_ids),
     }, indent=2))
 
 
@@ -2851,6 +2981,11 @@ def main():
     p.add_argument("--id", required=True, help="Investigation ID (scinv-...)")
     p.add_argument("--format", choices=["md", "json"], default="md", help="Output format")
 
+    # backfill-investigation-collection
+    p = subparsers.add_parser("backfill-investigation-collection",
+        help="Rebuild an investigation's paper collection from existing aboutness links")
+    p.add_argument("--id", required=True, help="Investigation ID (scinv-...)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2896,6 +3031,7 @@ def main():
         "add-evidence": cmd_add_evidence,
         "add-citation-impact": cmd_add_citation_impact,
         "export-investigation": cmd_export_investigation,
+        "backfill-investigation-collection": cmd_backfill_investigation_collection,
     }
 
     try:

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { T } from './tokens';
 import { BackNav, HeaderStrip, Panel, Icon, MarkdownContent } from './atoms';
 import { Shell, Loading, ErrorBox } from './corpus-detail';
-import type { InvestigationDetail, InvestigationPhase, ClaimNode, ImpactNode } from '@/lib/scientific-literature';
+import type { InvestigationDetail, InvestigationPhase, ClaimNode, ImpactNode, InvestigationPaperRef } from '@/lib/scientific-literature';
 
 const CLAIM_TIER_COLOR: Record<string, string> = {
   primary: T.rust,
@@ -115,6 +115,8 @@ export function InvestigationDetailView({ id }: { id: string }) {
           {isDeepDive && <ClaimsPanel claims={data.claims || []} />}
           {isDeepDive && <CitationImpactPanel impacts={data.citation_impacts || []} />}
 
+          <PapersPanel papers={data.papers || []} collection={data.collection} />
+
           <Panel title="Lifecycle">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
               {PHASES.map(({ key, label }, i) => {
@@ -207,6 +209,58 @@ function PaperLink({ paper, color }: { paper: { id: string; name?: string; doi?:
     >
       {paper.name || paper.doi || paper.id}
     </Link>
+  );
+}
+
+function PapersPanel({
+  papers,
+  collection,
+}: {
+  papers: InvestigationPaperRef[];
+  collection?: { id: string; name?: string; count?: number };
+}) {
+  if (papers.length === 0 && !collection) return null;
+  return (
+    <Panel
+      title={`Papers (${papers.length})`}
+      action={
+        collection ? (
+          <Link
+            href={`/scientific-literature/corpus/${collection.id}`}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontFamily: T.mono, fontSize: 11, color: T.teal, textDecoration: 'none',
+              border: `1px solid ${T.borderHi}`, borderRadius: 3, padding: '4px 10px',
+            }}
+          >
+            <Icon name="folder" size={13} color={T.teal} /> view as corpus
+          </Link>
+        ) : undefined
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {papers.map((p, i) => (
+          <Link
+            key={p.id}
+            href={`/scientific-literature/paper/${p.id}`}
+            style={{
+              display: 'grid', gridTemplateColumns: '52px 1fr auto', gap: 14, alignItems: 'center',
+              padding: '9px 4px', borderTop: i === 0 ? 'none' : `1px solid ${T.borderDim}`,
+              textDecoration: 'none', color: 'inherit',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(90,173,175,0.06)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>{p.year ?? '—'}</span>
+            <span style={{ fontSize: 13, color: T.fg, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name || p.id}</span>
+            {p.doi && <span style={{ fontFamily: T.mono, fontSize: 10, color: T.fgFaint }}>{p.doi}</span>}
+          </Link>
+        ))}
+        {papers.length === 0 && (
+          <span style={{ fontFamily: T.mono, fontSize: 11, color: T.fgFaint }}>No papers linked yet.</span>
+        )}
+      </div>
+    </Panel>
   );
 }
 

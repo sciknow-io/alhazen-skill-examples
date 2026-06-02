@@ -188,6 +188,8 @@ export interface InvestigationDetail {
   phases: InvestigationPhase[];
   claims?: ClaimNode[];
   citation_impacts?: ImpactNode[];
+  papers?: InvestigationPaperRef[];
+  collection?: { id: string; name?: string; count?: number };
 }
 
 // --- Read endpoints (scilit CLI) ----------------------------------------------

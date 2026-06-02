@@ -556,6 +556,8 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py show
 
 Returns the investigation metadata, its linked corpus, the phase notes ordered
 `discovery → … → report`, and (under the analysis phase) the linked faceting notes.
+It also returns `collection` `{id, name, count}` and `papers[]` (the investigation's
+paper set, sorted by year desc) — see **Investigation paper collection** below.
 
 ### `list-investigations` / `set-status`
 
@@ -602,6 +604,38 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py add-
     --impact-type extends \
     --impact-summary "Extends prime editing to primary human cells in vivo."
 # -> { "impact_id": "scimpact-...", "citing_paper": "scilit-paper-...", ... }
+```
+
+### Investigation paper collection
+
+Every investigation owns a **collection of all the papers it touched**, surfaced as a
+`scilit-corpus` so it appears in the landing Corpora list and has its own corpus page.
+
+- **Corpus investigations** reuse their source corpus as the collection — no extra collection
+  is created.
+- **Deep-dive investigations** get a *dedicated* curated corpus (named `"<inv name> - papers"`,
+  `alh-is-extensional false`, no logical query). Its members accumulate as the investigation
+  grows: the **focal** paper (on `create-investigation`), each **evidence source** paper (on
+  `add-evidence`), and each **citing** paper (on `add-citation-impact`) — all found-or-ingested
+  as real `scilit-paper`s and added idempotently.
+
+**Membership is papers only.** External information artifacts (PDF, JATS/PDF full-text,
+supplementary data, citation records) are **never** direct collection members — they attach to
+each paper via `alh-representation` and surface transitively through the paper. The
+investigation→collection link reuses `alh-aboutness(note, subject)` with `subject isa
+scilit-corpus`; collection membership reuses `alh-collection-membership(collection, member)` with
+`member isa scilit-paper`. No new schema.
+
+#### `backfill-investigation-collection` -- Populate the collection for an existing investigation
+
+Investigations created before this feature (or any whose collection drifted) can be (re)populated
+from their existing aboutness links — focal + every evidence-source + every citing paper. Idempotent.
+
+```bash
+uv run python .claude/skills/scientific-literature/scientific_literature.py \
+    backfill-investigation-collection --id scinv-...
+# -> { "success": true, "investigation": "scinv-...", "collection": "collection-...",
+#      "papers_added": 12 }
 ```
 
 ### `export-investigation` -- Markdown or JSON report
