@@ -54,6 +54,12 @@ attribute scilit-dataset-url, value string;
 attribute scilit-dataset-format, value string;
 attribute scilit-dataset-size, value string;
 
+# Conference session specific
+attribute scilit-session-type, value string;
+attribute scilit-speaker, value string;
+attribute scilit-affiliation, value string;
+attribute scilit-session-url, value string;
+
 # Relation attributes
 attribute scilit-usage-type, value string;
 
@@ -120,6 +126,15 @@ entity scilit-book sub alh-domain-thing,
 
 # SCILIT-PROTOCOL - A published protocol or methods paper
 entity scilit-protocol sub scilit-paper;
+
+
+# SCILIT-SESSION - Informal conference session (keynote, workshop, tutorial, panel)
+entity scilit-session sub alh-domain-thing,
+    owns scilit-session-type,
+    owns scilit-session-url,
+    owns scilit-publication-year,
+    owns scilit-speaker @card(0..),
+    owns scilit-affiliation @card(0..);
 
 
 # -----------------------------------------------------------------------------
