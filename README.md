@@ -1,6 +1,6 @@
 # alhazen-skill-examples
 
-Example skills for the [Skillful Alhazen](https://github.com/GullyBurns/skillful-alhazen) knowledge notebook framework — a TypeDB-powered scientific notebook for researchers building knowledge graphs from papers, notes, and domain data.
+Example skills for the [Skillful Alhazen](https://github.com/sciknow-io/skillful-alhazen) knowledge notebook framework — a TypeDB-powered scientific notebook for researchers building knowledge graphs from papers, notes, and domain data.
 
 ## What is this?
 
@@ -68,10 +68,10 @@ uv run --project <skill-path> python <skill-path>/jobhunt.py list-pipeline
 
 Standard plugins depend on the `alhazen-core` infrastructure plugin. Install it first, then install domain skills individually.
 
-**Step 1 — Add the marketplace and install alhazen-core:**
+**Step 1 — Install the `alhazen-core` infrastructure plugin (from the skillful-alhazen marketplace):**
 ```
-/plugin marketplace add sciknow-io/alhazen-skill-examples
-/plugin install alhazen-core@alhazen-skills
+/plugin marketplace add sciknow-io/skillful-alhazen
+/plugin install alhazen-core@skillful-alhazen
 ```
 
 Initialize the infrastructure (one-time):
@@ -90,7 +90,13 @@ Expected output:
 }
 ```
 
-**Step 2 — Use a domain skill:**
+**Step 2 — Add this marketplace and install a domain skill:**
+```
+/plugin marketplace add sciknow-io/alhazen-skill-examples
+/plugin install they-said-whaaa@alhazen-skills
+```
+
+Then use it:
 ```bash
 # Replace <skill-path> with your plugin cache path
 # e.g. ~/.claude/plugins/cache/they-said-whaaa/
@@ -308,7 +314,7 @@ demo/                       # Shared Next.js base app
 
 ## Building a New Skill
 
-See the [Alhazen Skill Architecture](https://github.com/GullyBurns/skillful-alhazen/wiki/Skill-Architecture) wiki for a full guide.
+See the [Alhazen Skill Architecture](https://github.com/sciknow-io/skillful-alhazen/wiki/Skill-Architecture) wiki for a full guide.
 
 **Standard skill** (depends on alhazen-core):
 

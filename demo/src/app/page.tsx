@@ -43,7 +43,7 @@ export default function HubPage() {
             assembled into this app via <code className="font-mono">make demo-sync</code>.
             See the{" "}
             <a
-              href="https://github.com/GullyBurns/alhazen-skill-examples"
+              href="https://github.com/sciknow-io/alhazen-skill-examples"
               className="text-primary underline underline-offset-2 hover:text-primary/80"
             >
               README
