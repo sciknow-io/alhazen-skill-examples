@@ -2343,7 +2343,7 @@ def build_parser():
     p.add_argument("--value", type=float, help="Numeric result value")
     p.add_argument("--value-text", help="Non-numeric result (e.g., 'Canceled')")
     p.add_argument("--flag", choices=["High", "Low", ""], default="", help="Flag")
-    p.add_argument("--units", help="Units (e.g., mg/dL, %)")
+    p.add_argument("--units", help="Units (e.g., mg/dL, %%)")
     p.add_argument("--reference-range", help="Reference range (e.g., '70-99', '>59')")
     p.add_argument("--panel-name", help="Panel group name (e.g., 'Lipid Panel')")
 
