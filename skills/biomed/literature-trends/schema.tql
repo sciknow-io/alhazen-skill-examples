@@ -25,11 +25,11 @@ relation hypothesis-genealogy,
 # Entities
 # ---------------------------------------------------------------------------
 
-entity trend-thread sub collection,
+entity trend-thread sub alh-collection,
     owns trend-window,
     owns trend-keyword;
 
-entity trend-hypothesis-note sub note,
+entity trend-hypothesis-note sub alh-note,
     owns abductive-role,
     owns trend-window,
     plays hypothesis-genealogy:predecessor,
