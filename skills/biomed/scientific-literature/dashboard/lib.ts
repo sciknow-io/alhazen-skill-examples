@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { runSkill, gatewayConfigured } from '@/lib/skill-gateway';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,7 +24,10 @@ const NOTEBOOK_SCRIPT = process.env.NOTEBOOK_SCRIPT_PATH
 // main venv also has, so PROJECT_ROOT is the correct cwd for every command.
 const CWD = PROJECT_ROOT;
 
+// Prefer the warm gateway (no per-request Python cold-start); fall back to
+// spawning the CLI directly for host dev where no gateway is running.
 async function runScilit(args: string[]): Promise<unknown> {
+  if (gatewayConfigured()) return runSkill('scientific-literature', args);
   const { stdout } = await execFileAsync(
     'uv',
     ['run', 'python', SCILIT_SCRIPT, ...args],
@@ -37,6 +41,7 @@ async function runScilit(args: string[]): Promise<unknown> {
 }
 
 async function runNotebook(args: string[]): Promise<unknown> {
+  if (gatewayConfigured()) return runSkill('typedb-notebook', args);
   const { stdout } = await execFileAsync(
     'uv',
     ['run', 'python', NOTEBOOK_SCRIPT, ...args],

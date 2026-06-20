@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { runSkill, gatewayConfigured } from '@/lib/skill-gateway';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,7 +16,10 @@ const COACH_SCRIPT = SKILL_ROOT
 
 const CWD = SKILL_ROOT || PROJECT_ROOT;
 
+// Prefer the warm gateway (no per-request Python cold-start); fall back to
+// spawning the CLI directly for host dev where no gateway is running.
 async function runCoach(args: string[]): Promise<Record<string, unknown>> {
+  if (gatewayConfigured()) return runSkill('coach', args) as Promise<Record<string, unknown>>;
   const { stdout } = await execFileAsync(
     'uv',
     ['run', 'python', COACH_SCRIPT, ...args],
