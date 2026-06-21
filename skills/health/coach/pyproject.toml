@@ -2,7 +2,7 @@
 name = "alhazen-skill-coach"
 version = "0.1.0"
 description = "Health Coach Notebook Skill - personal health & fitness monitoring"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "typedb-driver>=3.8.0",
 ]
