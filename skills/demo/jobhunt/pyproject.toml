@@ -13,8 +13,8 @@ dependencies = [
     "voyageai>=0.3.0",
 ]
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []
 
 # Force CPU-only PyTorch (pymde depends on torch but we don't need CUDA)
 [[tool.uv.index]]

@@ -15,5 +15,5 @@ youtube = [
     "youtube-transcript-api>=0.6.0",
 ]
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []
