@@ -378,22 +378,22 @@ entity coach-health-export sub alh-artifact;
 
 # COACH-ASSESSMENT-NOTE - Periodic health evaluation written by Claude
 # Content is markdown: current status, flagged concerns, action plan
-entity coach-assessment-note sub alh-note,
+entity coach-assessment-note sub alh-analysis-note,
     owns coach-date;
 
 # COACH-RECOMMENDATION-NOTE - Actionable recommendation with lifecycle
-entity coach-recommendation-note sub alh-note,
+entity coach-recommendation-note sub alh-reporting-note,
     owns coach-rec-status,
     owns coach-rec-priority,
     owns coach-rec-expires-at,
     plays coach-recommendation-trigger:recommendation;
 
 # COACH-HEARTBEAT-NOTE - Log of a heartbeat cycle run
-entity coach-heartbeat-note sub alh-note,
+entity coach-heartbeat-note sub alh-sensemaking-note,
     owns coach-date;
 
 # COACH-TREND-NOTE - Narrative trend analysis
-entity coach-trend-note sub alh-note;
+entity coach-trend-note sub alh-analysis-note;
 
 # COACH-APPOINTMENT-PREP-NOTE - Prep instructions for an upcoming appointment
-entity coach-appointment-prep-note sub alh-note;
+entity coach-appointment-prep-note sub alh-reporting-note;

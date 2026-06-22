@@ -220,34 +220,34 @@ entity scilit-reference sub alh-fragment;
 # -----------------------------------------------------------------------------
 
 # SCILIT-EXTRACTION-NOTE - Extracted information from a paper
-entity scilit-extraction-note sub alh-note,
+entity scilit-extraction-note sub alh-sensemaking-note,
     owns scilit-note-type,
     owns scilit-extraction-method,
     owns scilit-extraction-model;
 
 
 # SCILIT-CLASSIFICATION-NOTE - Classification/categorization of a paper
-entity scilit-classification-note sub alh-note,
+entity scilit-classification-note sub alh-sensemaking-note,
     owns scilit-note-type;
 
 
 # SCILIT-SUMMARY-NOTE - Summary of a paper or section
-entity scilit-summary-note sub alh-note,
+entity scilit-summary-note sub alh-sensemaking-note,
     owns scilit-note-type;
 
 
 # SCILIT-SYNTHESIS-NOTE - Synthesis across multiple papers
-entity scilit-synthesis-note sub alh-note,
+entity scilit-synthesis-note sub alh-analysis-note,
     owns scilit-note-type;
 
 
 # SCILIT-CRITIQUE-NOTE - Critical analysis or review
-entity scilit-critique-note sub alh-note,
+entity scilit-critique-note sub alh-analysis-note,
     owns scilit-note-type;
 
 
 # SCILIT-METHODOLOGY-NOTE - Notes about methods/protocols
-entity scilit-methodology-note sub alh-note,
+entity scilit-methodology-note sub alh-sensemaking-note,
     owns scilit-note-type;
 
 
@@ -273,7 +273,7 @@ entity scilit-faceting-note sub alh-analysis-pipeline-note,
 # `owns` only.
 
 # SCILIT-CLAIM - A single claim extracted from the focal paper.
-entity scilit-claim sub alh-note,
+entity scilit-claim sub alh-analysis-note,
     owns scilit-claim-type,
     owns scilit-claim-statement;
 
@@ -282,7 +282,7 @@ entity scilit-claim sub alh-note,
 # When the evidence comes from a cited paper, that paper is linked via
 # alh-aboutness (note:$evidence, subject:$source-paper); scilit-source-url is a
 # fallback locator for sources with no DOI.
-entity scilit-evidence sub alh-note,
+entity scilit-evidence sub alh-analysis-note,
     owns scilit-evidence-type,
     owns scilit-experimental-design,
     owns scilit-data-summary,
@@ -292,7 +292,7 @@ entity scilit-evidence sub alh-note,
 # SCILIT-CITATION-IMPACT - How a citing paper received the focal paper's claims,
 # threaded under the investigation. The citing paper is linked via alh-aboutness
 # (note:$impact, subject:$citing-paper).
-entity scilit-citation-impact sub alh-note,
+entity scilit-citation-impact sub alh-analysis-note,
     owns scilit-impact-type,
     owns scilit-impact-summary;
 

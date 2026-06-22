@@ -29,7 +29,7 @@ entity trend-thread sub alh-collection,
     owns trend-window,
     owns trend-keyword;
 
-entity trend-hypothesis-note sub alh-note,
+entity trend-hypothesis-note sub alh-analysis-note,
     owns abductive-role,
     owns trend-window,
     plays hypothesis-genealogy:predecessor,
