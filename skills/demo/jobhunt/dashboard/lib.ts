@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { runSkill, gatewayConfigured } from '@/lib/skill-gateway';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,7 +29,11 @@ const NOTEBOOK_SCRIPT = process.env.NOTEBOOK_SCRIPT_PATH
 // Working directory for uv run: the skill dir (standalone) or project root (installed)
 const CWD = SKILL_ROOT || PROJECT_ROOT;
 
+// Prefer the warm gateway (no per-request Python cold-start, and the dashboard
+// container ships no uv/skill code); fall back to spawning the CLI directly for
+// host dev where no gateway is running.
 async function runJobhunt(args: string[]): Promise<unknown> {
+  if (gatewayConfigured()) return runSkill('jobhunt', args);
   const { stdout } = await execFileAsync(
     'uv',
     ['run', 'python', JOBHUNT_SCRIPT, ...args],
@@ -38,6 +43,7 @@ async function runJobhunt(args: string[]): Promise<unknown> {
 }
 
 async function runNotebook(args: string[]): Promise<unknown> {
+  if (gatewayConfigured()) return runSkill('typedb-notebook', args);
   const { stdout } = await execFileAsync(
     'uv',
     ['run', 'python', NOTEBOOK_SCRIPT, ...args],
@@ -51,6 +57,7 @@ async function runNotebook(args: string[]): Promise<unknown> {
 }
 
 async function runForager(args: string[]): Promise<unknown> {
+  if (gatewayConfigured()) return runSkill('jobhunt', args, { entrypoint: 'job_forager' });
   const { stdout } = await execFileAsync(
     'uv',
     ['run', 'python', FORAGER_SCRIPT, ...args],
@@ -164,6 +171,7 @@ export async function getEmbeddingMap(excludeIds?: string[]) {
   if (excludeIds && excludeIds.length > 0) {
     args.push('--exclude', ...excludeIds);
   }
+  if (gatewayConfigured()) return runSkill('jobhunt', args, { entrypoint: 'embedding_map' });
   // Use PROJECT_ROOT as cwd (not SKILL_ROOT) because embedding_map.py
   // needs pymde/qdrant/voyageai which are in the main project's deps
   const { stdout } = await execFileAsync(
