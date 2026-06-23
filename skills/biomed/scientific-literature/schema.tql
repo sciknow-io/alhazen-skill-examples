@@ -361,5 +361,92 @@ relation scilit-dataset-usage,
 
 
 # =============================================================================
+# KQED PROTOTYPE  (System 1 rhetorical / System 2 epistemic-KEfED / System 3 mechanistic)
+# Published typing taxonomies are modeled as core alh-vocabulary terms + alh-classification
+# (provenance-bearing); only small structural value-sets are plain attributes here.
+# =============================================================================
+
+# --- structural attributes ---
+attribute kefed-variable-role, value string;     # parameter | constant | measurement
+attribute kefed-value-set, value string;         # e.g. "WT|KO"
+attribute kefed-efo-label, value string;         # EFO factor annotation (text)
+attribute scilit-knowledge-level, value string;  # observation|association|assertion|prediction (Biolink)
+attribute scilit-bio-scale, value string;        # molecular|cellular|tissue|organism
+attribute scilit-knowledge-goal, value string;
+attribute scilit-gap-provenance, value string;   # explicit-cue|inferred-from-hinge|both
+attribute scilit-mech-type, value string;        # activates|inhibits|maintains|suppresses
+attribute scilit-hinge-term-id, value string;    # soft FK to a Teufel-CFC alh-vocabulary-type
+
+# --- relations ---
+relation kefed-element,           # a KEfED model groups its design variables
+    relates model,
+    relates variable;
+
+relation kefed-observed-via,      # an observation instantiates a KEfED model (template)
+    relates observation,
+    relates model;
+
+relation kefed-licenses,          # warrant table as data: experiment-type term -> warrant term
+    relates licensing-type,
+    relates licensed-warrant;
+
+relation scilit-hinge,            # claim <-> existing knowledge claim (Teufel CFC)
+    owns scilit-hinge-term-id,
+    relates hinging-claim,
+    relates hinged-to;
+
+relation scilit-addresses,        # a claim/observation bears on a gap
+    relates addressing-note,
+    relates gap;
+
+relation scilit-mechanistic-link, # System-3 notebook-defined causal edge
+    owns scilit-mech-type,
+    owns confidence,
+    relates mech-source,
+    relates mech-target;
+
+# --- entities ---
+# KEFED-MODEL - an experimental design (protocol) as an information artifact.
+# Experiment type via alh-classification -> experiment-type vocab term;
+# warrant DERIVED by following that term's kefed-licenses edge (not stored here).
+entity kefed-model sub alh-artifact,
+    plays kefed-element:model,
+    plays kefed-observed-via:model;
+
+# KEFED-VARIABLE - a design element (independent var, constant, or measurement).
+entity kefed-variable sub alh-domain-thing,
+    owns kefed-variable-role,
+    owns kefed-value-set,
+    owns kefed-efo-label,
+    plays kefed-element:variable;
+
+# OBSERVATION - a measurement-in-context; immutable, background-free (System 2, D node).
+entity scilit-observation sub alh-note,
+    owns scilit-knowledge-level,
+    owns scilit-bio-scale,
+    plays kefed-observed-via:observation,
+    plays scilit-addresses:addressing-note;
+
+# GAP - a statement of ignorance (System 1, Q node); category via alh-classification -> Boguslav term.
+entity scilit-gap sub alh-sensemaking-note,
+    owns scilit-knowledge-goal,
+    owns scilit-gap-provenance,
+    plays scilit-addresses:gap;
+
+# BIOENTITY - a System-3 domain entity (SIRT3, SOD2, ROS, HSC, aging...).
+entity scilit-bioentity sub alh-domain-thing,
+    plays scilit-mechanistic-link:mech-source,
+    plays scilit-mechanistic-link:mech-target;
+
+# --- additive plays extensions on existing types ---
+entity scilit-claim plays scilit-hinge:hinging-claim,
+    plays scilit-hinge:hinged-to,
+    plays scilit-addresses:addressing-note;
+entity scilit-paper plays scilit-hinge:hinged-to;
+entity alh-vocabulary-type plays kefed-licenses:licensing-type,
+    plays kefed-licenses:licensed-warrant;
+
+
+# =============================================================================
 # END SCIENTIFIC LITERATURE NAMESPACE
 # =============================================================================
