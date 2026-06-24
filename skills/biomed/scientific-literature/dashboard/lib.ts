@@ -259,3 +259,30 @@ export async function listInvestigations(collectionId?: string): Promise<{ inves
 export async function getInvestigation(id: string): Promise<InvestigationDetail> {
   return runScilit(['show-investigation', '--id', id]) as Promise<InvestigationDetail>;
 }
+
+export interface WorklistItem {
+  id: string;
+  name: string;
+  doi: string | null;
+  doi_url: string | null;
+  status: 'needed' | 'held' | 'ingested' | 'rhetorical-done' | 'sensemade';
+  genre: 'primary' | 'review' | 'unknown' | null;
+  load: number;
+  journal: string | null;
+  year: number | null;
+  ref_numbers: number[];
+}
+
+export interface AcquisitionWorklist {
+  success: boolean;
+  citing_paper: string;
+  summary: Record<string, number>;
+  total: number;
+  items: WorklistItem[];
+}
+
+export async function getAcquisitionWorklist(citing?: string): Promise<AcquisitionWorklist> {
+  const args = ['acquisition-worklist'];
+  if (citing) args.push('--citing', citing);
+  return runScilit(args) as Promise<AcquisitionWorklist>;
+}

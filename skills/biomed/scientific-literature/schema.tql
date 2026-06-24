@@ -34,6 +34,12 @@ attribute scilit-page-range, value string;
 attribute scilit-publication-year, value integer;
 attribute scilit-keyword, value string;
 
+# Citation-target registry (acquisition tracking for cited references)
+attribute scilit-acquisition-status, value string;   # needed | held | ingested | sensemade | rhetorical-done
+attribute scilit-target-genre, value string;         # primary | review | unknown
+attribute scilit-reference-key, value string;        # "<citing-paper-id>:<ref-number>" (multi-valued)
+attribute scilit-citation-load, value integer;       # how many citing-claims/occurrences depend on this target
+
 # Section types
 attribute scilit-section-type, value string;
 attribute scilit-section-number, value string;
@@ -107,6 +113,10 @@ entity scilit-paper sub alh-domain-thing,
     owns scilit-page-range,
     owns scilit-publication-year,
     owns scilit-keyword @card(0..),
+    owns scilit-acquisition-status,
+    owns scilit-target-genre,
+    owns scilit-reference-key @card(0..),
+    owns scilit-citation-load,
     plays scilit-supplementary-material:paper,
     plays scilit-dataset-usage:paper-entity;
 

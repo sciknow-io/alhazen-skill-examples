@@ -2776,6 +2776,60 @@ def cmd_backfill_investigation_collection(args):
     }, indent=2))
 
 
+def cmd_acquisition_worklist(args):
+    """Citation-target registry for a citing paper: every cited reference with its
+    acquisition status, genre, citation-load and (for needed papers) a DOI link
+    the operator can use to download the PDF manually. Powers the dashboard
+    download worklist. Defaults to the Hallmarks-2023 review."""
+    citing = getattr(args, "citing", None) or "scilit-paper-21632e9ffb04"
+    with get_driver() as driver:
+        with driver.transaction(TYPEDB_DATABASE, TransactionType.READ) as tx:
+            rows = list(tx.query(
+                'match $p isa scilit-paper, has scilit-acquisition-status $s; '
+                'fetch { "id": $p.id, "name": $p.name, "doi": $p.scilit-doi, '
+                '"status": $s, "genre": $p.scilit-target-genre, '
+                '"load": $p.scilit-citation-load, "journal": $p.scilit-journal-name, '
+                '"year": $p.scilit-publication-year, '
+                '"refkeys": [ $p.scilit-reference-key ] };'
+            ).resolve())
+
+    prefix = f"{citing}:"
+    items = []
+    for r in rows:
+        refkeys = [str(k) for k in (r.get("refkeys") or []) if k]
+        mine = [k for k in refkeys if k.startswith(prefix)]
+        if not mine:
+            continue
+        refnums = sorted(int(k.split(":")[-1]) for k in mine if k.split(":")[-1].isdigit())
+        doi = r.get("doi")
+        items.append({
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "doi": doi,
+            "doi_url": f"https://doi.org/{doi}" if doi else None,
+            "status": r.get("status"),
+            "genre": r.get("genre"),
+            "load": r.get("load") or 0,
+            "journal": r.get("journal"),
+            "year": r.get("year"),
+            "ref_numbers": refnums,
+        })
+    # needed first, then by citation-load desc, then ref number
+    order = {"needed": 0, "held": 1, "ingested": 2, "rhetorical-done": 3, "sensemade": 4}
+    items.sort(key=lambda x: (order.get(x["status"], 9), -(x["load"] or 0),
+                              x["ref_numbers"][0] if x["ref_numbers"] else 9999))
+    summary = {}
+    for it in items:
+        summary[it["status"]] = summary.get(it["status"], 0) + 1
+    print(json.dumps({
+        "success": True,
+        "citing_paper": citing,
+        "summary": summary,
+        "total": len(items),
+        "items": items,
+    }, indent=2))
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -2986,6 +3040,11 @@ def main():
         help="Rebuild an investigation's paper collection from existing aboutness links")
     p.add_argument("--id", required=True, help="Investigation ID (scinv-...)")
 
+    # acquisition-worklist
+    p = subparsers.add_parser("acquisition-worklist",
+        help="Citation-target registry / download worklist for a citing paper")
+    p.add_argument("--citing", help="Citing paper ID (default: Hallmarks-2023 review)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -3032,6 +3091,7 @@ def main():
         "add-citation-impact": cmd_add_citation_impact,
         "export-investigation": cmd_export_investigation,
         "backfill-investigation-collection": cmd_backfill_investigation_collection,
+        "acquisition-worklist": cmd_acquisition_worklist,
     }
 
     try:
