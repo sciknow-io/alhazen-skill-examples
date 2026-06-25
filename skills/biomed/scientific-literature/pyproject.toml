@@ -8,6 +8,7 @@ dependencies = [
     "requests>=2.31.0",
     "pyyaml>=6.0.0",
     "tqdm>=4.0.0",
+    "kreuzberg>=4.0.0",
 ]
 
 [dependency-groups]
