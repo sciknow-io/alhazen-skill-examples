@@ -651,6 +651,25 @@ uv run python .claude/skills/scientific-literature/scientific_literature.py expo
 
 ---
 
+## Meeting surveys (discourse sources)
+
+A **meeting survey** (a `survey`-type investigation, e.g. the CAIS 2026 conference survey)
+covers a program of papers + spoken sessions. Two types support this, both in the
+**domain-neutral discourse/source layer** (KQED System 1) — they never touch the biomed
+S2/S3 (KEfED, bio-mechanism):
+
+- **`scilit-session`** — a discourse SOURCE (keynote | workshop | tutorial | talk | panel),
+  sibling of `scilit-paper`. Owns `scilit-session-type`, `scilit-speaker` (multi),
+  `scilit-affiliation` (multi), `scilit-session-url`, `scilit-publication-year`. A claim can
+  cite a talk via `scilit-hinge:hinged-to`, exactly as it cites a paper; a session is a corpus
+  member and an aboutness subject like any source.
+- **`scilit-experience-note`** — a first-person anecdote / engagement record (`sub
+  alh-sensemaking-note`), `about` a session/paper/person. Owns `scilit-experience-event` (the
+  occasion, e.g. "CAIS 2026 keynote"). This is distinct from the KQED epistemic
+  `scilit-observation` (a measurement-in-context, System 2 / KEfED D-node).
+
+---
+
 ## Source Connector Details
 
 ### Europe PMC
