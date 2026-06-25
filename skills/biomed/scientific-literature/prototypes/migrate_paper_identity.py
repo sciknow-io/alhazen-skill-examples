@@ -46,16 +46,21 @@ def meta_of(d, pid):
 
 
 def repoint_relations(d, victim_id, survivor_id):
-    """For each relation the victim plays, re-insert with the survivor, then delete victim's.
+    """For each relation the victim plays, atomically re-point it to the survivor.
 
     We do NOT constrain the concrete type of the other role-player in match clauses;
     instead we identify it only by its id attribute. This avoids TypeDB INF6 errors
     when the other player's declared type is abstract (e.g. 'collection').
+
+    Each re-point is expressed as a single match/insert/delete query so it is atomic
+    within one TypeDB write transaction — a crash cannot leave a duplicate relation.
     """
+    ev = escape_string(victim_id)
+    es = escape_string(survivor_id)
     for rel, victim_role, other_role in PAPER_RELATIONS:
         # Find all relations of this type where victim plays victim_role.
         # Match the other player only by id (no type constraint to avoid INF6).
-        query = (f'match $v isa scilit-paper, has id "{victim_id}"; '
+        query = (f'match $v isa scilit-paper, has id "{ev}"; '
                  f'$r isa {rel}, links ({victim_role}: $v, {other_role}: $o); '
                  f'$o has id $oid; fetch {{"oid": $oid}};')
         try:
@@ -66,27 +71,24 @@ def repoint_relations(d, victim_id, survivor_id):
 
         for row in rows:
             oid = row["oid"]
+            eoid = escape_string(oid)
             # Check if the survivor already has this relation to the same other player
-            # (to avoid duplicate relations after re-pointing)
-            already = K._has(d, (f'$s isa scilit-paper, has id "{survivor_id}"; '
-                                  f'$o has id "{escape_string(oid)}"; '
+            # (to avoid duplicate relations after re-pointing; keeps the op idempotent).
+            already = K._has(d, (f'$s isa scilit-paper, has id "{es}"; '
+                                  f'$o has id "{eoid}"; '
                                   f'$r isa {rel}, links ({victim_role}: $s, {other_role}: $o);'))
             if not already:
-                # Insert the equivalent relation with the survivor.
-                # We match the other player by id only (no type constraint).
-                K.w(d, (f'match $s isa scilit-paper, has id "{survivor_id}"; '
-                         f'$o has id "{escape_string(oid)}"; '
-                         f'insert ({victim_role}: $s, {other_role}: $o) isa {rel};'))
+                # Atomically insert the survivor relation and delete the victim relation
+                # in a single write transaction (match … insert … delete).
+                K.w(d, (f'match $v isa scilit-paper, has id "{ev}"; '
+                         f'$s isa scilit-paper, has id "{es}"; '
+                         f'$o has id "{eoid}"; '
+                         f'$r isa {rel}, links ({victim_role}: $v, {other_role}: $o); '
+                         f'insert ({victim_role}: $s, {other_role}: $o) isa {rel}; '
+                         f'delete $r;'))
                 print(f"    re-pointed {rel} ({other_role}={oid}) from {victim_id} to {survivor_id}")
             else:
                 print(f"    skipped dup {rel} ({other_role}={oid}) - survivor already has it")
-
-            # Delete the victim's relation (match by victim id + other player id).
-            K.w(d, (f'match $v isa scilit-paper, has id "{victim_id}"; '
-                     f'$o has id "{escape_string(oid)}"; '
-                     f'$r isa {rel}, links ({victim_role}: $v, {other_role}: $o); '
-                     f'delete $r;'))
-            print(f"    deleted {rel} from victim {victim_id}")
 
 
 def main(apply=False):
@@ -117,7 +119,6 @@ def main(apply=False):
 
         # 1. Handle collisions: merge victims into survivor
         # survivor = the paper whose old id equals nid if present, else first in list
-        victim_set = set()
         for nid, olds in merges.items():
             survivor = next((p for p in olds if p == nid), olds[0])
             victims = [p for p in olds if p != survivor]
@@ -126,15 +127,8 @@ def main(apply=False):
                 print(f"  Re-pointing relations from victim {victim} to survivor {survivor}")
                 repoint_relations(d, victim, survivor)
                 # Delete the victim entity
-                K.w(d, f'match $v isa scilit-paper, has id "{victim}"; delete $v;')
+                K.w(d, f'match $v isa scilit-paper, has id "{escape_string(victim)}"; delete $v;')
                 print(f"  Deleted victim {victim}")
-                victim_set.add(victim)
-
-        # Build set of victims (to skip during id-swap phase)
-        all_victims = set()
-        for nid, olds in merges.items():
-            survivor = next((p for p in olds if p == nid), olds[0])
-            all_victims.update(p for p in olds if p != survivor)
 
         # 2. Swap id @key for every surviving paper (skip victims, skip already-correct)
         # Re-fetch live paper ids (victims are now deleted)
