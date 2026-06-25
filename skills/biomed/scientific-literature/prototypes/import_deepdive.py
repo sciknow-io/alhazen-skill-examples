@@ -108,10 +108,16 @@ def import_record(d, paper_id, doi, title, record):
                     except Exception:
                         pass
             models[et] = mid
-        K.add_observation(d, inv, models[et], stmt,
-                          o.get("knowledge_level", "assertion"),
-                          o.get("bio_scale", "molecular"), about=paper_id)
-        out["observations"] += 1
+        # content-idempotent: skip if an observation with this statement already
+        # exists under this investigation (add_observation uses a random id, so we
+        # must dedupe on content, not id)
+        if not K._has(d, f'$i isa scilit-investigation, has id "{inv}"; '
+                        f'$o isa scilit-observation, has content "{escape_string(stmt)}"; '
+                        f'(parent-note: $i, child-note: $o) isa alh-note-threading;'):
+            K.add_observation(d, inv, models[et], stmt,
+                              o.get("knowledge_level", "assertion"),
+                              o.get("bio_scale", "molecular"), about=paper_id)
+            out["observations"] += 1
 
     # ---- gaps (direct insert; no vocab dependency) ----
     for g in record.get("gaps", []):
@@ -136,9 +142,13 @@ def import_record(d, paper_id, doi, title, record):
             continue
         sid = K.add_bioentity(d, s)
         tid = K.add_bioentity(d, t)
-        K.add_mech_link(d, sid, ml.get("type", "activates"), tid,
-                        confidence=ml.get("confidence", 0.8))
-        out["mech_links"] += 1
+        mtype = ml.get("type", "activates")
+        # edge-idempotent: skip if this (source, target, type) link already exists
+        if not K._has(d, f'$s isa scilit-bioentity, has id "{sid}"; $t isa scilit-bioentity, has id "{tid}"; '
+                        f'$r isa scilit-mechanistic-link, links (mech-source: $s, mech-target: $t), '
+                        f'has scilit-mech-type "{escape_string(mtype)}";'):
+            K.add_mech_link(d, sid, mtype, tid, confidence=ml.get("confidence", 0.8))
+            out["mech_links"] += 1
 
     # ---- status + claim-level hinges back to the review ----
     _set_single(d, paper_id, "scilit-acquisition-status", "sensemade")
