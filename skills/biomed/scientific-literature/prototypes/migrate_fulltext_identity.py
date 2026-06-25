@@ -22,8 +22,8 @@ def main(apply=False, move=False):
             src = os.path.join(CACHE, "pdf", canon_doi_fname(doi) + ".pdf")
             if not os.path.exists(src):
                 continue
-            aid = f"scilit-fulltext-{pid.split('-')[-1]}-pdf"
-            dst_rel = f"fulltext/{pid}/source.pdf"
+            aid = f"scilit-fulltext-{pid.split('-')[-1]}"
+            dst_rel = f"fulltext/{pid}/{aid}.pdf"
             linked = K._has(d, f'$p isa scilit-paper, has id "{pid}"; $a isa alh-artifact, has id "{aid}"; '
                               f'$r isa alh-representation, links (alh-artifact: $a, referent: $p);')
             plan.append((pid, aid, src, dst_rel, linked))

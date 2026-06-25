@@ -89,6 +89,14 @@ No code path calls `generate_id("scilit-paper")` any more. Dedup is enforced at 
 
 ## §5 — Full-text identity (extension)
 
+> **SUPERSEDED naming (2026-06-24):** the filename/id convention below (`source.pdf`/`text.md`,
+> per-`(paper,kind)` artifact id `scilit-fulltext-<paper-hash>-<kind>`) was later replaced by:
+> **one `scilit-fulltext-<paper-hash>` artifact per paper** whose renditions are named by the
+> artifact id — `fulltext/<paper-id>/scilit-fulltext-<paper-hash>.pdf` (and `.txt`), sharing the
+> id-base. Files are **moved** (not symlinked) and carry a complete file xref
+> (`cache-path` + `content-hash` + `file-size` + `mime-type`). See `SKILL.md` (the live convention)
+> and `prototypes/rename_fulltext_artifact_files.py`. The original text is kept for history.
+
 Full text stays an `alh-artifact` linked by `alh-representation` (`alh-artifact ↔ referent`), but gains **identity derived from the paper + a `kind`**:
 
 - **Kinds:** `pdf` (source PDF), `text` (extracted markdown). Extensible (`html`, `supplement`).

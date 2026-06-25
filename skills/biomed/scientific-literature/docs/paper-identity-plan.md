@@ -459,6 +459,11 @@ git commit -m "feat(scilit): paper-identity migration (re-key + dup-DOI merge + 
 
 ### Task 5: Full-text identity + backfill
 
+> **SUPERSEDED naming (2026-06-24):** the `source.pdf`/`text.md` + `scilit-fulltext-<paper-hash>-<kind>`
+> scheme in this task was later replaced by one `scilit-fulltext-<paper-hash>` artifact per paper with
+> renditions named by the artifact id (`fulltext/<paper-id>/scilit-fulltext-<paper-hash>.pdf`/`.txt`),
+> moved (not symlinked), with a complete file xref. See `SKILL.md` + `prototypes/rename_fulltext_artifact_files.py`.
+
 **Files:**
 - Create: `prototypes/migrate_fulltext_identity.py`
 

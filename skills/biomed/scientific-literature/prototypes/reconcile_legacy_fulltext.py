@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reconcile scilit-papers whose source PDF is legacy-named (`pdf/artifact-<id>.pdf`,
 reachable only via the paper's existing non-fulltext artifact, not by DOI filename)
-into the unified full-text scheme: symlink the source to `fulltext/<paper-id>/source.pdf`,
-create the deterministic `scilit-fulltext-<paper-hash>-pdf` artifact + alh-representation,
+into the unified full-text scheme: symlink the source to `fulltext/<paper-id>/<artifact-id>.pdf`,
+create the deterministic `scilit-fulltext-<paper-hash>` artifact + alh-representation,
 set acquisition-status=held if missing. Dry-run unless --apply; symlink unless --move."""
 import os, sys, shutil
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,8 +53,8 @@ def main(apply=False, move=False):
             print("DRY-RUN. Re-run with --apply."); return
         art=lnk=sym=stat=0
         for pid, src in plan:
-            aid = f"scilit-fulltext-{pid.split('-')[-1]}-pdf"
-            dst_rel = f"fulltext/{pid}/source.pdf"; dst = os.path.join(CACHE, dst_rel)
+            aid = f"scilit-fulltext-{pid.split('-')[-1]}"
+            dst_rel = f"fulltext/{pid}/{aid}.pdf"; dst = os.path.join(CACHE, dst_rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if not os.path.exists(dst):
                 shutil.move(src, dst); sym += 1

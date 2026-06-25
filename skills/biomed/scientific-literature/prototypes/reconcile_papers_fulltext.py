@@ -2,7 +2,7 @@
 """Reconcile scilit-papers whose source PDF lives in the `papers/` download workspace
 (e.g. CAIS-2026, DOI-structured `papers/<prefix>/<suffix>.pdf`) into the SAME full-text
 scheme as every other scilit investigation: symlink the source to
-`fulltext/<paper-id>/source.pdf`, create the deterministic `scilit-fulltext-<paper-hash>-pdf`
+`fulltext/<paper-id>/<artifact-id>.pdf`, create the deterministic `scilit-fulltext-<paper-hash>`
 artifact (kind=pdf) linked via alh-representation, and set acquisition-status=held.
 
 Dry-run unless --apply; symlink unless --move."""
@@ -33,11 +33,11 @@ def main(apply=False, move=False):
             src = src_by_doi.get(doi)
             if not src:
                 continue
-            aid = f"scilit-fulltext-{pid.split('-')[-1]}-pdf"
+            aid = f"scilit-fulltext-{pid.split('-')[-1]}"
             linked = K._has(d, f'$p isa scilit-paper, has id "{pid}"; $a isa alh-artifact, has id "{aid}"; '
                               f'$r isa alh-representation, links (alh-artifact: $a, referent: $p);')
             has_status = K._has(d, f'$p isa scilit-paper, has id "{pid}", has scilit-acquisition-status $s;')
-            plan.append((pid, doi, aid, src, f"fulltext/{pid}/source.pdf", linked, has_status))
+            plan.append((pid, doi, aid, src, f"fulltext/{pid}/{aid}.pdf", linked, has_status))
         print(f"papers/-sourced scilit-papers={len(plan)} | already-linked={sum(1 for x in plan if x[5])} "
               f"| to-link={sum(1 for x in plan if not x[5])} | missing-status={sum(1 for x in plan if not x[6])}")
         if not apply:

@@ -38,8 +38,8 @@ def main(apply=False, move=False):
             print("DRY-RUN."); return
         art=lnk=sym=stat=mark=0
         for pid, doi, src in recl:
-            aid = f"scilit-fulltext-{pid.split('-')[-1]}-pdf"
-            dst_rel = f"fulltext/{pid}/source.pdf"; dst = os.path.join(CACHE, dst_rel)
+            aid = f"scilit-fulltext-{pid.split('-')[-1]}"
+            dst_rel = f"fulltext/{pid}/{aid}.pdf"; dst = os.path.join(CACHE, dst_rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if not os.path.exists(dst): shutil.move(src, dst); sym+=1
             if not K._exists(d, aid):
