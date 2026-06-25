@@ -12,6 +12,7 @@ alh-classification (which carries provenance + confidence) — not inline enums.
 """
 import os, sys, json, re, argparse
 from typedb.driver import TypeDB, Credentials, DriverOptions, TransactionType
+from paper_identity import paper_identity
 
 try:
     from skillful_alhazen.utils.skill_helpers import escape_string, generate_id, get_timestamp
@@ -222,16 +223,40 @@ def add_addresses(driver, note_id, gap_id):
               f'insert (addressing-note: $n, gap: $g) isa scilit-addresses;')
 
 
-def find_or_make_stub_paper(driver, citation, pid=None):
+def upsert_paper(driver, meta):
+    """Find-or-create a scilit-paper by deterministic identity. Returns its id."""
+    pid, tier, value = paper_identity(meta)
+    if not _exists(driver, pid):
+        ts = get_timestamp()
+        attrs = [f'has id "{pid}"',
+                 f'has scilit-identity-basis "{escape_string(tier)}"',
+                 f'has scilit-identity-value "{escape_string(value)}"',
+                 f'has created-at {ts}']
+        if meta.get("name") or meta.get("title"):
+            attrs.append(f'has name "{escape_string((meta.get("name") or meta.get("title"))[:200])}"')
+        if meta.get("doi"):
+            attrs.append(f'has scilit-doi "{escape_string(str(meta["doi"]))}"')
+        if meta.get("pmid"):
+            attrs.append(f'has scilit-pmid "{escape_string(str(meta["pmid"]))}"')
+        w(driver, f'insert $p isa scilit-paper, {", ".join(attrs)};')
+    else:
+        # fill only-missing identity attrs (older rows created before this change)
+        if not _has(driver, f'$p isa scilit-paper, has id "{pid}", has scilit-identity-basis $b;'):
+            w(driver, f'match $p isa scilit-paper, has id "{pid}"; '
+                      f'insert $p has scilit-identity-basis "{escape_string(tier)}", '
+                      f'has scilit-identity-value "{escape_string(value)}";')
+    return pid
+
+
+def find_or_make_stub_paper(driver, citation):
     """Lightweight scilit-paper stub for a hinge target (cited existing KC)."""
     hit = r(driver, f'match $p isa scilit-paper, has name $n; $n == "{escape_string(citation)}"; fetch {{"id": $p.id}};')
     if hit:
         return hit[0]["id"]
-    pid = pid or generate_id("scilit-paper")
-    ts = get_timestamp()
-    w(driver, f'insert $p isa scilit-paper, has id "{pid}", has name "{escape_string(citation)}", '
-              f'has provenance "hinge-target-stub", has created-at {ts};')
-    return pid
+    # Route through upsert_paper for deterministic identity; provenance set after.
+    new_pid = upsert_paper(driver, {"name": citation})
+    w(driver, f'match $p isa scilit-paper, has id "{new_pid}"; insert $p has provenance "hinge-target-stub";')
+    return new_pid
 
 
 def _hinge_target_kind(driver, target_id):

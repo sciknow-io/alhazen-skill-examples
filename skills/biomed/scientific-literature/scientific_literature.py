@@ -74,10 +74,10 @@ except ImportError:
     print("Warning: requests not installed. Run: uv add requests", file=sys.stderr)
 
 try:
-    import pdfplumber
-    PDFPLUMBER_AVAILABLE = True
+    import kreuzberg  # noqa: F401  (layout/table-aware full-text extraction)
+    KREUZBERG_AVAILABLE = True
 except ImportError:
-    PDFPLUMBER_AVAILABLE = False
+    KREUZBERG_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Cache utilities (inlined — no external package needed)
@@ -116,20 +116,24 @@ def should_cache(content):
     return len(content) >= _CACHE_THRESHOLD
 
 
-def save_to_cache(artifact_id, content, mime_type):
+def save_to_cache(artifact_id, content, mime_type, subdir=None):
+    """Write a cached file. When `subdir` is given (e.g. "fulltext/<paper-id>"), the file
+    lands at <subdir>/<artifact_id>.<ext> (the per-paper full-text layout); otherwise the
+    legacy by-type layout <type_dir>/<artifact_id>.<ext>."""
     if isinstance(content, str):
         content_bytes = content.encode("utf-8")
     else:
         content_bytes = content
     type_dir, ext = _MIME_TYPE_MAP.get(mime_type, ("other", "bin"))
     cache_dir = _get_cache_dir()
-    type_path = cache_dir / type_dir
-    type_path.mkdir(parents=True, exist_ok=True)
+    rel_dir = subdir if subdir else type_dir
+    base = cache_dir / rel_dir
+    base.mkdir(parents=True, exist_ok=True)
     filename = f"{artifact_id}.{ext}"
-    full_path = type_path / filename
+    full_path = base / filename
     full_path.write_bytes(content_bytes)
     return {
-        "cache_path": f"{type_dir}/{filename}",
+        "cache_path": f"{rel_dir}/{filename}",
         "file_size": len(content_bytes),
         "content_hash": hashlib.sha256(content_bytes).hexdigest(),
         "full_path": str(full_path),
@@ -1019,9 +1023,9 @@ def arxiv_pdf_url(doi: str) -> str | None:
 
 def cmd_fetch_pdf(args):
     """Download a paper PDF, extract full text, save both to disk, store artifact in TypeDB."""
-    if not PDFPLUMBER_AVAILABLE:
+    if not KREUZBERG_AVAILABLE:
         print(json.dumps({"success": False,
-                          "error": "pdfplumber not installed. Run: uv add pdfplumber"}))
+                          "error": "kreuzberg not installed. Run: uv add kreuzberg"}))
         sys.exit(1)
     if not CACHE_AVAILABLE:
         print(json.dumps({"success": False,
@@ -1060,8 +1064,8 @@ def cmd_fetch_pdf(args):
             art = existing[0]
             artifact_id = art.get("id")
             text_cache_path = art.get("cache-path") or ""
-            pdf_cache_path = (text_cache_path.replace("text/", "pdf/").replace(".txt", ".pdf")
-                              if text_cache_path else "")
+            # renditions are siblings sharing the artifact-id base; pdf = swap the suffix
+            pdf_cache_path = text_cache_path.replace(".txt", ".pdf") if text_cache_path else ""
             print(json.dumps({
                 "success": True,
                 "paper_id": paper_id,
@@ -1096,42 +1100,47 @@ def cmd_fetch_pdf(args):
                           "error": "Response is not a PDF (bad URL or access denied)"}))
         sys.exit(1)
 
-    # Generate single artifact_id used as stem for BOTH cache files
-    artifact_id = generate_id("artifact")
+    # Deterministic full-text artifact id; both renditions live in fulltext/<paper-id>/,
+    # named by the artifact id and sharing the base (suffix = format).
+    artifact_id = f"scilit-fulltext-{paper_id.split('-')[-1]}"
+    subdir = f"fulltext/{paper_id}"
 
-    # Save PDF binary  ->  pdf/{artifact_id}.pdf
-    pdf_cache = save_to_cache(artifact_id, pdf_bytes, "application/pdf")
+    # Save PDF source  ->  fulltext/<paper-id>/<artifact-id>.pdf
+    pdf_cache = save_to_cache(artifact_id, pdf_bytes, "application/pdf", subdir=subdir)
 
-    # Extract full text - NO character cap
+    # Extract full text with kreuzberg (layout/table-aware)  ->  fulltext/<paper-id>/<artifact-id>.txt
     print(f"Extracting text ({len(pdf_bytes):,} bytes, {pdf_cache['full_path']}) ...",
           file=sys.stderr)
-    import io as _io
-    all_pages = []
-    with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
-        page_count = len(pdf.pages)
-        for page in pdf.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                all_pages.append(page_text)
-
-    full_text = "\n\n".join(all_pages)
-    print(f"Extracted {len(full_text):,} chars from {page_count} pages.", file=sys.stderr)
-
-    # Save extracted text  ->  text/{artifact_id}.txt
-    text_cache = save_to_cache(artifact_id, full_text, "text/plain")
+    from kreuzberg import extract_file_sync
+    _res = extract_file_sync(pdf_cache["full_path"])
+    full_text = _res.content or ""
+    try:
+        page_count = int((getattr(_res, "metadata", None) or {}).get("page_count") or 0)
+    except Exception:
+        page_count = 0
+    print(f"Extracted {len(full_text):,} chars.", file=sys.stderr)
+    text_cache = save_to_cache(artifact_id, full_text, "text/plain", subdir=subdir)
 
     timestamp = get_timestamp()
 
-    # Insert scilit-pdf-fulltext artifact into TypeDB
-    name_esc = escape_string(f"{paper_name} [PDF text]")
+    # Upsert the scilit-pdf-fulltext artifact (deterministic id). cache-path -> the .txt
+    # rendition (indexable); the .pdf is the sibling by suffix.
+    name_esc = escape_string(f"{paper_name} [full text]")
     with get_driver() as driver:
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
+            # idempotent (handles --force re-download): drop any prior artifact at this id
+            tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; '
+                     f'$r isa alh-fragmentation, links (whole: $a); delete $r;').resolve()
+            tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; '
+                     f'$r isa alh-representation, links (alh-artifact: $a); delete $r;').resolve()
+            tx.query(f'match $a isa alh-artifact, has id "{artifact_id}"; delete $a;').resolve()
             tx.query(
                 f'insert $a isa scilit-pdf-fulltext, '
                 f'has id "{artifact_id}", '
                 f'has name "{name_esc}", '
                 f'has source-uri "{escape_string(pdf_url)}", '
                 f'has cache-path "{escape_string(text_cache["cache_path"])}", '
+                f'has scilit-fulltext-kind "pdf", '
                 f'has mime-type "text/plain", '
                 f'has file-size {text_cache["file_size"]}, '
                 f'has content-hash "{text_cache["content_hash"]}", '
@@ -1140,13 +1149,19 @@ def cmd_fetch_pdf(args):
             ).resolve()
             tx.commit()
 
-        # Link artifact -> paper via representation
+        # Link artifact -> paper via representation + mark the paper held
         with driver.transaction(TYPEDB_DATABASE, TransactionType.WRITE) as tx:
             tx.query(
                 f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
                 f'$a isa scilit-pdf-fulltext, has id "{artifact_id}"; '
                 f'insert (alh-artifact: $a, referent: $p) isa alh-representation;'
             ).resolve()
+            held = list(tx.query(
+                f'match $p isa scilit-paper, has id "{escape_string(paper_id)}", '
+                f'has scilit-acquisition-status $s; fetch {{ "s": $s }};').resolve())
+            if not held:
+                tx.query(f'match $p isa scilit-paper, has id "{escape_string(paper_id)}"; '
+                         f'insert $p has scilit-acquisition-status "held";').resolve()
             tx.commit()
 
     print(json.dumps({

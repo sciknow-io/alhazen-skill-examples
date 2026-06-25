@@ -55,6 +55,13 @@ attribute scilit-note-type, value string;
 attribute scilit-extraction-method, value string;
 attribute scilit-extraction-model, value string;
 
+# --- discourse-source + experience-note attributes (KQED discourse/source layer) ---
+attribute scilit-session-type, value string;     # keynote | workshop | tutorial | talk | panel
+attribute scilit-speaker, value string;
+attribute scilit-affiliation, value string;
+attribute scilit-session-url, value string;
+attribute scilit-experience-event, value string; # the occasion, e.g. "CAIS 2026 keynote"
+
 # Dataset specific
 attribute scilit-dataset-url, value string;
 attribute scilit-dataset-format, value string;
@@ -85,6 +92,11 @@ attribute scilit-impact-type, value string;
 attribute scilit-impact-summary, value string;
 # Fallback locator when a source/citing paper has no DOI
 attribute scilit-source-url, value string;
+
+# Paper identity attributes (KQED)
+attribute scilit-identity-basis, value string;   # doi | pmid | arxiv | content-hash
+attribute scilit-identity-value, value string;    # the normalized basis key
+attribute scilit-fulltext-kind, value string;     # pdf | text | html | supplement
 
 
 # -----------------------------------------------------------------------------
@@ -117,6 +129,8 @@ entity scilit-paper sub alh-domain-thing,
     owns scilit-target-genre,
     owns scilit-reference-key @card(0..),
     owns scilit-citation-load,
+    owns scilit-identity-basis,
+    owns scilit-identity-value,
     plays scilit-supplementary-material:paper,
     plays scilit-dataset-usage:paper-entity;
 
@@ -153,6 +167,18 @@ entity scilit-book sub alh-domain-thing,
 
 # SCILIT-PROTOCOL - A published protocol or methods paper
 entity scilit-protocol sub scilit-paper;
+
+
+# SCILIT-SESSION - a discourse SOURCE (keynote/workshop/tutorial/talk/panel), sibling of
+# scilit-paper. The domain-neutral source for spoken/event content used by meeting surveys.
+# alh-aboutness:subject and alh-collection-membership:member are inherited from alh-domain-thing;
+# the scilit-hinge:hinged-to play is added additively below (scilit-hinge is defined later).
+entity scilit-session sub alh-domain-thing,
+    owns scilit-session-type,
+    owns scilit-speaker @card(0..),
+    owns scilit-affiliation @card(0..),
+    owns scilit-session-url,
+    owns scilit-publication-year;
 
 
 # -----------------------------------------------------------------------------
@@ -261,6 +287,13 @@ entity scilit-methodology-note sub alh-sensemaking-note,
     owns scilit-note-type;
 
 
+# SCILIT-EXPERIENCE-NOTE - a first-person anecdote / engagement record (System 1 rhetorical,
+# discourse layer). `about` a source (session/paper) or person via the inherited alh-aboutness:note.
+# Distinct from the KQED epistemic scilit-observation (a measurement-in-context, System 2).
+entity scilit-experience-note sub alh-sensemaking-note,
+    owns scilit-experience-event;
+
+
 # SCILIT-FACETING-NOTE - A re-runnable feature-faceting workflow over one or more scilit corpora.
 # The worked example of the general alh-analysis-pipeline-note: stores a self-contained Hamilton
 # module (alh-pipeline-script) that fetches the corpora, writes facet:value scilit-keyword tags,
@@ -336,6 +369,10 @@ entity scilit-investigation sub alh-note,
 # record-phase upsert in the CLI.
 entity scilit-investigation-phase sub alh-note,
     owns scilit-phase;
+
+
+# Additive extension: core artifact type owns full-text kind
+alh-artifact owns scilit-fulltext-kind;
 
 
 # -----------------------------------------------------------------------------
@@ -453,6 +490,7 @@ entity scilit-claim plays scilit-hinge:hinging-claim,
     plays scilit-hinge:hinged-to,
     plays scilit-addresses:addressing-note;
 entity scilit-paper plays scilit-hinge:hinged-to;
+entity scilit-session plays scilit-hinge:hinged-to;
 entity alh-vocabulary-type plays kefed-licenses:licensing-type,
     plays kefed-licenses:licensed-warrant;
 
