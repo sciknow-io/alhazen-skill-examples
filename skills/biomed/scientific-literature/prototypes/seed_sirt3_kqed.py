@@ -199,14 +199,14 @@ def seed():
             K.add_addresses(d, note, g)
 
         # ---- 4d. hinges (claim -> existing KC stub paper; CFC term) ----
-        stubs = {nm: K.find_or_make_stub_paper(d, nm, pid=f"kqed-stub-{i}")
-                 for i, nm in enumerate(["Guarente 2007 (sirtuins extend lifespan)",
+        stubs = {nm: K.find_or_make_stub_paper(d, nm)
+                 for nm in ["Guarente 2007 (sirtuins extend lifespan)",
                                          "Kanfi 2012 (SIRT6 OE extends lifespan)",
                                          "Qiu 2010 (SIRT3-SOD2 deacetylation)",
                                          "Ito 2006 (ROS limits HSC lifespan)",
                                          "Banerjee 2012 (sirtuin lifespan controversy)",
                                          "Balaban 2005 (passive mitochondrial damage view)",
-                                         "Kiel 2005 (SLAM HSC markers)"])}
+                                         "Kiel 2005 (SLAM HSC markers)"]}
         HINGES = [(C1, "Guarente 2007 (sirtuins extend lifespan)", "PMot"),
                   (C1, "Kanfi 2012 (SIRT6 OE extends lifespan)", "CoCo-"),
                   (C5, "Qiu 2010 (SIRT3-SOD2 deacetylation)", "PUse"),

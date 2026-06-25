@@ -248,7 +248,7 @@ def upsert_paper(driver, meta):
     return pid
 
 
-def find_or_make_stub_paper(driver, citation, pid=None):
+def find_or_make_stub_paper(driver, citation):
     """Lightweight scilit-paper stub for a hinge target (cited existing KC)."""
     hit = r(driver, f'match $p isa scilit-paper, has name $n; $n == "{escape_string(citation)}"; fetch {{"id": $p.id}};')
     if hit:
