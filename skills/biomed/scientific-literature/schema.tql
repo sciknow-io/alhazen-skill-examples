@@ -93,6 +93,11 @@ attribute scilit-impact-summary, value string;
 # Fallback locator when a source/citing paper has no DOI
 attribute scilit-source-url, value string;
 
+# Paper identity attributes (KQED)
+attribute scilit-identity-basis, value string;   # doi | pmid | arxiv | content-hash
+attribute scilit-identity-value, value string;    # the normalized basis key
+attribute scilit-fulltext-kind, value string;     # pdf | text | html | supplement
+
 
 # -----------------------------------------------------------------------------
 # ENTITY TYPES - Scientific Literature Collections
@@ -124,6 +129,8 @@ entity scilit-paper sub alh-domain-thing,
     owns scilit-target-genre,
     owns scilit-reference-key @card(0..),
     owns scilit-citation-load,
+    owns scilit-identity-basis,
+    owns scilit-identity-value,
     plays scilit-supplementary-material:paper,
     plays scilit-dataset-usage:paper-entity;
 
@@ -362,6 +369,10 @@ entity scilit-investigation sub alh-note,
 # record-phase upsert in the CLI.
 entity scilit-investigation-phase sub alh-note,
     owns scilit-phase;
+
+
+# Additive extension: core artifact type owns full-text kind
+alh-artifact owns scilit-fulltext-kind;
 
 
 # -----------------------------------------------------------------------------
