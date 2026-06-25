@@ -15,7 +15,7 @@ Run:  uv run python prototypes/build_citation_registry.py
 import os, sys, json, re, glob
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import kqed as K
-from kqed import escape_string, generate_id, get_timestamp
+from kqed import escape_string
 
 REVIEW_PAPER = "scilit-paper-21632e9ffb04"
 REVIEW_DOI   = "10.1016/j.cell.2022.11.001"
@@ -88,7 +88,6 @@ def main():
             counts[status] += 1; counts[genre] += 1
 
             pid = find_paper_by_doi(d, doi)
-            ts = get_timestamp()
             if pid:
                 counts["reused"] += 1
                 set_single_attr(d, pid, "scilit-acquisition-status", status)
@@ -98,17 +97,16 @@ def main():
                     K.w(d, f'match $p isa scilit-paper, has id "{pid}"; insert $p has scilit-reference-key "{escape_string(refkey)}";')
             else:
                 counts["stub"] += 1
-                pid = generate_id("scilit-paper")
-                nm = escape_string((title or doi)[:200])
-                q = (f'insert $p isa scilit-paper, has id "{pid}", has name "{nm}", '
-                     f'has scilit-doi "{escape_string(doi)}", '
-                     f'has scilit-acquisition-status "{status}", has scilit-target-genre "{genre}", '
-                     f'has scilit-reference-key "{escape_string(refkey)}", has created-at {ts}')
+                pid = K.upsert_paper(d, {"doi": doi, "name": title or doi})
+                set_single_attr(d, pid, "scilit-acquisition-status", status)
+                set_single_attr(d, pid, "scilit-target-genre", genre)
+                if not K._has(d, f'$p isa scilit-paper, has id "{pid}", has scilit-reference-key "{escape_string(refkey)}";'):
+                    K.w(d, f'match $p isa scilit-paper, has id "{pid}"; insert $p has scilit-reference-key "{escape_string(refkey)}";')
                 if journal:
-                    q += f', has scilit-journal-name "{escape_string(journal)}"'
+                    set_single_attr(d, pid, "scilit-journal-name", journal)
                 if year.isdigit():
-                    q += f', has scilit-publication-year {int(year)}'
-                K.w(d, q + ";")
+                    if not K._has(d, f'$p isa scilit-paper, has id "{pid}", has scilit-publication-year $y;'):
+                        K.w(d, f'match $p isa scilit-paper, has id "{pid}"; insert $p has scilit-publication-year {int(year)};')
         print(json.dumps(counts, indent=2))
     finally:
         d.close()
