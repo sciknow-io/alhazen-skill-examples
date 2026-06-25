@@ -6,7 +6,7 @@ scheme as every other scilit investigation: symlink the source to
 artifact (kind=pdf) linked via alh-representation, and set acquisition-status=held.
 
 Dry-run unless --apply; symlink unless --move."""
-import os, sys, glob
+import os, sys, glob, shutil
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import kqed as K
@@ -47,7 +47,7 @@ def main(apply=False, move=False):
             dst = os.path.join(CACHE, dst_rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if not os.path.exists(dst):
-                (os.rename if move else os.symlink)(src, dst); sym += 1
+                shutil.move(src, dst); sym += 1
             if not K._exists(d, aid):
                 ts = get_timestamp()
                 K.w(d, f'insert $a isa alh-artifact, has id "{aid}", has cache-path "{escape_string(dst_rel)}", '

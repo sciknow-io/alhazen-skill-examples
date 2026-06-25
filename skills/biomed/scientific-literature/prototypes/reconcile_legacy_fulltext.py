@@ -4,7 +4,7 @@ reachable only via the paper's existing non-fulltext artifact, not by DOI filena
 into the unified full-text scheme: symlink the source to `fulltext/<paper-id>/source.pdf`,
 create the deterministic `scilit-fulltext-<paper-hash>-pdf` artifact + alh-representation,
 set acquisition-status=held if missing. Dry-run unless --apply; symlink unless --move."""
-import os, sys
+import os, sys, shutil
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import kqed as K
@@ -57,7 +57,7 @@ def main(apply=False, move=False):
             dst_rel = f"fulltext/{pid}/source.pdf"; dst = os.path.join(CACHE, dst_rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if not os.path.exists(dst):
-                (os.rename if move else os.symlink)(src, dst); sym += 1
+                shutil.move(src, dst); sym += 1
             if not K._exists(d, aid):
                 ts = get_timestamp()
                 K.w(d, f'insert $a isa alh-artifact, has id "{aid}", has cache-path "{escape_string(dst_rel)}", '

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic full-text artifacts + backfill. Dry-run unless --apply; symlink unless --move."""
-import os, sys, glob, re
+import os, sys, glob, re, shutil
 ROOT = "/Users/gullyburns/Documents/GitHub/alhazen-skill-examples/skills/biomed/scientific-literature"
 sys.path.insert(0, ROOT)
 import kqed as K
@@ -40,10 +40,7 @@ def main(apply=False, move=False):
             dst = os.path.join(CACHE, dst_rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if not os.path.exists(dst):
-                if move:
-                    os.rename(src, dst)
-                else:
-                    os.symlink(src, dst)
+                shutil.move(src, dst)   # relocate the source into fulltext/; remove original
                 symlinked += 1
             else:
                 skipped += 1

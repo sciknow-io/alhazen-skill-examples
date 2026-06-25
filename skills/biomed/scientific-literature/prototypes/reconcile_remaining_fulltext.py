@@ -3,7 +3,7 @@
 locate a source PDF under alternate cache/pdf naming (arXiv `arxiv-<id>*.pdf`, or a fuzzy
 normalized-DOI prefix that tolerates malformed suffixes). Link found sources into the
 fulltext scheme; mark genuinely-sourceless papers `needed`. Dry-run unless --apply."""
-import os, sys, glob
+import os, sys, glob, shutil
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import kqed as K
@@ -41,7 +41,7 @@ def main(apply=False, move=False):
             aid = f"scilit-fulltext-{pid.split('-')[-1]}-pdf"
             dst_rel = f"fulltext/{pid}/source.pdf"; dst = os.path.join(CACHE, dst_rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            if not os.path.exists(dst): (os.rename if move else os.symlink)(src, dst); sym+=1
+            if not os.path.exists(dst): shutil.move(src, dst); sym+=1
             if not K._exists(d, aid):
                 ts=get_timestamp()
                 K.w(d, f'insert $a isa alh-artifact, has id "{aid}", has cache-path "{escape_string(dst_rel)}", '
