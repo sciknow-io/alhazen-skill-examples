@@ -1,5 +1,17 @@
 # alhazen-skill-examples
 
+> [!IMPORTANT]
+> **This repo is being phased out (June 2026).** Skillful Alhazen moved to a **per-repo database** architecture — each skill's data now lives in the repo that owns it. Four skills here have **migrated to dedicated repos** and are maintained there going forward:
+>
+> | Skill | New home | Shared database |
+> |-------|----------|-----------------|
+> | `scientific-literature` | [alhazen-skill-deep-research](https://github.com/sciknow-io/alhazen-skill-deep-research) | `alh_deep_research` |
+> | `literature-trends` | [alhazen-skill-deep-research](https://github.com/sciknow-io/alhazen-skill-deep-research) | `alh_deep_research` |
+> | `jobhunt` | [alhazen-skill-personal-assistant](https://github.com/sciknow-io/alhazen-skill-personal-assistant) | `alh_personal` |
+> | `coach` | [alhazen-skill-personal-assistant](https://github.com/sciknow-io/alhazen-skill-personal-assistant) | `alh_personal` |
+>
+> **Please install these four from their new repos.** The copies here are frozen and no longer updated, but remain installable so existing setups don't break. The other example skills (`alg-precision-therapeutics`, `they-said-whaaa`) are unaffected and stay here as references.
+
 Example skills for the [Skillful Alhazen](https://github.com/sciknow-io/skillful-alhazen) knowledge notebook framework — a TypeDB-powered scientific notebook for researchers building knowledge graphs from papers, notes, and domain data.
 
 ## What is this?
@@ -15,12 +27,13 @@ This repo serves two purposes:
 
 | Skill | Plugin type | Description |
 |-------|-------------|-------------|
-| [jobhunt](plugins/jobhunt/) | self-contained | Track job applications, identify skill gaps, plan learning |
+| [jobhunt](plugins/jobhunt/) ⚠️ **moved** | self-contained | Track job applications, identify skill gaps, plan learning — now in [alhazen-skill-personal-assistant](https://github.com/sciknow-io/alhazen-skill-personal-assistant) |
 | [alhazen-core](skills/core/alhazen-core/) | infrastructure | Starts TypeDB, loads base schema — required by multi-plugin installs |
 | [they-said-whaaa](skills/journalism/they-said-whaaa/) | standard | Credibility tracker — ingest YouTube + news, detect contradictions |
-| [scientific-literature](skills/biomed/scientific-literature/) | standard | Multi-source literature search (EPMC, PubMed, OpenAlex, bioRxiv) |
+| [scientific-literature](skills/biomed/scientific-literature/) ⚠️ **moved** | standard | Multi-source literature search (EPMC, PubMed, OpenAlex, bioRxiv) — now in [alhazen-skill-deep-research](https://github.com/sciknow-io/alhazen-skill-deep-research) |
 | [alg-precision-therapeutics](skills/biomed/alg-precision-therapeutics/) | standard | Rare disease mechanism investigation from a MONDO diagnosis |
-| [literature-trends](skills/biomed/literature-trends/) | biomed | Trace hypothesis evolution across time windows in a literature cluster |
+| [literature-trends](skills/biomed/literature-trends/) ⚠️ **moved** | biomed | Trace hypothesis evolution across time windows in a literature cluster — now in [alhazen-skill-deep-research](https://github.com/sciknow-io/alhazen-skill-deep-research) |
+| [coach](skills/health/coach/) ⚠️ **moved** | standard | Personal health & fitness monitoring — now in [alhazen-skill-personal-assistant](https://github.com/sciknow-io/alhazen-skill-personal-assistant) |
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "alhazen-skills",
-  "description": "Knowledge graph skills for the Alhazen scientific notebook framework (TypeDB-powered)",
+  "description": "DEPRECATED (Jun 2026) -- scientific-literature & literature-trends moved to alhazen-skill-deep-research; jobhunt & coach moved to alhazen-skill-personal-assistant. These copies are frozen but kept installable. See README.",
   "homepage": "https://github.com/sciknow-io/alhazen-skill-examples",
   "owner": {
     "name": "SciKnow.io",
